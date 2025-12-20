@@ -1,0 +1,59 @@
+{
+  "name": "iluvatar-2.0",
+  "version": "2.0.0",
+  "description": "AI-powered hackathon automation system with 20 specialized agents",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha 'tests/**/*.test.js' --timeout 10000",
+    "test:e2e": "mocha 'tests/e2e/**/*.test.js' --timeout 300000",
+    "test:chaos": "mocha 'tests/chaos/**/*.test.js' --timeout 300000",
+    "test:unit": "mocha 'tests/unit/**/*.test.js'",
+    "deploy:vercel": "node deployers/vercel-deployer.js",
+    "deploy:railway": "node deployers/railway-deployer.js",
+    "deploy:aws": "node deployers/aws-deployer.js",
+    "setup": "node setup/init-system.js",
+    "start": "echo 'ILUVATAR 2.0 - Use n8n workflow interface'",
+    "lint": "eslint .",
+    "format": "prettier --write '**/*.{js,json,md}'"
+  },
+  "keywords": [
+    "hackathon",
+    "automation",
+    "ai",
+    "claude",
+    "anthropic",
+    "n8n",
+    "workflow",
+    "agents"
+  ],
+  "author": "ILUVATAR Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "ioredis": "^5.3.2",
+    "aws-sdk": "^2.1498.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "mocha": "^10.2.0",
+    "chai": "^4.3.10",
+    "sinon": "^17.0.1",
+    "eslint": "^8.54.0",
+    "prettier": "^3.1.0",
+    "@anthropic-ai/sdk": "^0.9.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iluvatar/iluvatar-2.0.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iluvatar/iluvatar-2.0/issues"
+  },
+  "homepage": "https://github.com/iluvatar/iluvatar-2.0#readme"
+}

@@ -1,0 +1,540 @@
+{
+  "name": "Velocity Tracking & Crunch Mode",
+  "active": false,
+  "versionId": "1",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "velocity-schedule",
+      "name": "Calculate Velocity Every 10 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Fetch velocity data from Redis\nconst Redis = require('ioredis');\nconst redis = new Redis({host: process.env.REDIS_HOST || 'redis', port: 6379});\n\nconst stateData = await redis.hgetall('state:data') || {};\nconst fileTracking = JSON.parse(stateData.file_tracking || '{}');\nconst metadata = JSON.parse(stateData.hackathon_metadata || '{}');\nconst timeTracking = JSON.parse(stateData.time_tracking || '{}');\n\n// Check if crunch mode is already active (to prevent re-triggering)\nconst crunchModeAlreadyActive = stateData.crunch_mode_active === 'true';\nconst crunchModePlan = stateData.crunch_mode_plan ? JSON.parse(stateData.crunch_mode_plan) : null;\n\n// Get velocity history with error handling\nlet velocityHistory = [];\ntry {\n  const rawHistory = await redis.lrange('velocity:history', 0, -1);\n  velocityHistory = rawHistory.map(h => {\n    try { return JSON.parse(h); } catch(e) { return { velocity: 0, timestamp: null }; }\n  }).filter(h => h.velocity !== undefined);\n} catch(e) {\n  console.error('Failed to fetch velocity history:', e);\n}\n\nawait redis.quit();\n\nreturn {\n  json: {\n    file_tracking: fileTracking,\n    metadata: metadata,\n    time_tracking: timeTracking,\n    velocity_history: velocityHistory,\n    crunch_mode_already_active: crunchModeAlreadyActive,\n    crunch_mode_plan: crunchModePlan,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "fetch-velocity-data",
+      "name": "Fetch Velocity Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate current velocity\nconst data = $input.item.json;\nconst fileTracking = data.file_tracking || {};\nconst metadata = data.metadata || {};\nconst velocityHistory = data.velocity_history || [];\nconst crunchModeAlreadyActive = data.crunch_mode_already_active || false;\n\nconst now = new Date();\nconst startTime = metadata.created_at ? new Date(metadata.created_at) : now;\nconst timeElapsedHours = Math.max(0.01, (now - startTime) / (1000 * 60 * 60));\n\n// Count completed files\nconst files = Object.entries(fileTracking);\nconst completedFiles = files.filter(([path, status]) => status === 'completed').length;\nconst totalFiles = Math.max(1, files.length);\n\n// Calculate velocity (files per hour)\nconst currentVelocity = completedFiles / timeElapsedHours;\n\n// Calculate moving average velocity (last 5 measurements)\nconst recentVelocities = velocityHistory.slice(-5).map(v => Number(v.velocity) || 0).filter(v => v > 0);\nconst avgVelocity = recentVelocities.length > 0 ? \n  recentVelocities.reduce((sum, v) => sum + v, 0) / recentVelocities.length : \n  currentVelocity;\n\n// Predict completion time\nconst remainingFiles = totalFiles - completedFiles;\nconst hoursToComplete = avgVelocity > 0 ? remainingFiles / avgVelocity : 999;\nconst predictedFinish = new Date(now.getTime() + hoursToComplete * 60 * 60 * 1000);\n\n// Check if on schedule\nconst deadline = metadata.deadline ? new Date(metadata.deadline) : new Date(now.getTime() + 24 * 60 * 60 * 1000);\nconst onSchedule = predictedFinish < deadline;\n\n// Calculate time buffer/deficit\nconst bufferHours = (deadline - predictedFinish) / (1000 * 60 * 60);\n\n// Determine if crunch mode SHOULD activate (only if not already active)\nconst timeRemainingPercent = ((deadline - now) / (deadline - startTime)) * 100;\nconst crunchModeShouldActivate = !crunchModeAlreadyActive && (timeRemainingPercent <= 10 || bufferHours < 2);\n\nreturn {\n  json: {\n    velocity: {\n      current: Number(currentVelocity.toFixed(4)),\n      average: Number(avgVelocity.toFixed(4)),\n      trend: currentVelocity > avgVelocity * 1.05 ? 'IMPROVING' : \n             (currentVelocity < avgVelocity * 0.95 ? 'DECLINING' : 'STABLE')\n    },\n    completion: {\n      completed_files: completedFiles,\n      total_files: totalFiles,\n      percent_complete: Math.floor((completedFiles / totalFiles) * 100),\n      hours_to_complete: Number(hoursToComplete.toFixed(2)),\n      predicted_finish: predictedFinish.toISOString(),\n      on_schedule: onSchedule\n    },\n    buffer: {\n      hours: Number(bufferHours.toFixed(2)),\n      status: bufferHours > 6 ? 'COMFORTABLE' : \n              (bufferHours > 2 ? 'ADEQUATE' : \n              (bufferHours > 0 ? 'TIGHT' : 'CRITICAL'))\n    },\n    crunch_mode: {\n      active: crunchModeAlreadyActive,\n      should_activate: crunchModeShouldActivate,\n      reason: (crunchModeAlreadyActive || crunchModeShouldActivate) ? \n        (timeRemainingPercent <= 10 ? 'TIME_CRITICAL' : 'BUFFER_DEPLETED') : \n        null\n    },\n    timestamp: data.timestamp\n  }\n};"
+      },
+      "id": "calculate-velocity",
+      "name": "Calculate Velocity & Predictions",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "LPUSH",
+        "key": "velocity:history",
+        "options": {
+          "args": "={{ JSON.stringify({velocity: $json.velocity.average || 0, timestamp: $json.timestamp}) }}"
+        }
+      },
+      "id": "save-velocity-history",
+      "name": "Save Velocity to History",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis - ILUVATAR"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "HMSET",
+        "key": "state:data",
+        "options": {
+          "args": "={{ JSON.stringify(['time_tracking', JSON.stringify({velocity: $('Calculate Velocity & Predictions').item.json.velocity.average, predicted_finish: $('Calculate Velocity & Predictions').item.json.completion.predicted_finish, buffer_hours: $('Calculate Velocity & Predictions').item.json.buffer.hours, crunch_mode: $('Calculate Velocity & Predictions').item.json.crunch_mode.active})]) }}"
+        }
+      },
+      "id": "update-state",
+      "name": "Update State with Velocity",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis - ILUVATAR"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Calculate Velocity & Predictions').item.json.crunch_mode.should_activate }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-crunch-mode",
+      "name": "Check Crunch Mode Activation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare Radagast crunch mode activation\nconst fs = require('fs');\nconst systemPrompt = fs.readFileSync('/data/agents/10-radagast.md', 'utf8');\n\nconst velocityData = $('Calculate Velocity & Predictions').item.json;\nconst fetchData = $('Fetch Velocity Data').item.json;\n\nreturn {\n  json: {\n    agent: 'radagast',\n    systemPrompt: systemPrompt,\n    input: {\n      event_type: 'crunch_mode_activation',\n      trigger_reason: velocityData.crunch_mode.reason,\n      current_state: {\n        velocity: velocityData.velocity,\n        completion: velocityData.completion,\n        buffer: velocityData.buffer\n      },\n      metadata: fetchData.metadata,\n      task: 'activate_crunch_mode'\n    }\n  }\n};"
+      },
+      "id": "prepare-crunch-mode",
+      "name": "Prepare Crunch Mode Activation",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-opus-4-20250514', max_tokens: 8192, thinking: {type: 'enabled', budget_tokens: 10000}, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "radagast-crunch-mode",
+      "name": "Radagast - Activate Crunch Mode",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1650, 200],
+      "credentials": {
+        "anthropicApi": {
+          "id": "2",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Radagast crunch mode response\nconst response = $input.item.json.content.find(c => c.type === 'text')?.text;\nconst result = JSON.parse(response);\n\nreturn {\n  json: {\n    crunch_mode_plan: result.crunch_mode_plan,\n    features_to_cut: result.features_to_cut || [],\n    scope_reduction: result.scope_reduction || {},\n    adjusted_schedule: result.adjusted_schedule || {}\n  }\n};"
+      },
+      "id": "parse-crunch-plan",
+      "name": "Parse Crunch Mode Plan",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "HMSET",
+        "key": "state:data",
+        "options": {
+          "args": "={{ JSON.stringify(['crunch_mode_active', 'true', 'crunch_mode_plan', JSON.stringify($json)]) }}"
+        }
+      },
+      "id": "save-crunch-plan",
+      "name": "Save Crunch Mode Plan",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [2050, 200],
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis - ILUVATAR"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "PUBLISH",
+        "key": "agent:Pippin",
+        "options": {
+          "args": "={{ JSON.stringify({from: 'Radagast', to: 'Pippin', type: 'crunch_mode_activated', payload: $('Parse Crunch Mode Plan').item.json}) }}"
+        }
+      },
+      "id": "notify-crunch-mode",
+      "name": "Notify Pippin - Crunch Mode",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [2250, 200],
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis - ILUVATAR"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '🚨 **CRUNCH MODE ACTIVATED** 🚨\\n\\nReason: ' + $('Calculate Velocity & Predictions').item.json.crunch_mode.reason + '\\n\\n**Scope Reductions:**\\n' + $('Parse Crunch Mode Plan').item.json.features_to_cut.slice(0, 5).map(f => '- ' + f).join('\\n') + '\\n\\n**Focus:** Core features only. Demo-ready by deadline.', username: 'Crunch Mode Alert'}) }}"
+      },
+      "id": "send-crunch-alert",
+      "name": "Send Crunch Mode Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Calculate Velocity & Predictions').item.json.completion.on_schedule }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "id": "check-schedule-warning",
+      "name": "Check Schedule Warning",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1250, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '⚠️ **SCHEDULE WARNING** ⚠️\\n\\nCurrent pace: ' + $('Calculate Velocity & Predictions').item.json.velocity.average.toFixed(2) + ' files/hour\\nPredicted finish: ' + new Date($('Calculate Velocity & Predictions').item.json.completion.predicted_finish).toLocaleString() + '\\nBuffer: ' + $('Calculate Velocity & Predictions').item.json.buffer.hours.toFixed(1) + ' hours (' + $('Calculate Velocity & Predictions').item.json.buffer.status + ')\\n\\n**Recommendations:**\\n- Increase clone count\\n- Reduce nice-to-haves\\n- Simplify complex features', username: 'Schedule Monitor'}) }}"
+      },
+      "id": "send-schedule-warning",
+      "name": "Send Schedule Warning",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Calculate Velocity & Predictions').item.json.velocity.trend }}",
+              "value2": "IMPROVING"
+            }
+          ]
+        }
+      },
+      "id": "check-positive-trend",
+      "name": "Check Positive Trend",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1250, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '📈 Velocity improving! Current: ' + $('Calculate Velocity & Predictions').item.json.velocity.current.toFixed(2) + ' files/hour (avg: ' + $('Calculate Velocity & Predictions').item.json.velocity.average.toFixed(2) + ')', username: 'Velocity Tracker'}) }}"
+      },
+      "id": "send-positive-update",
+      "name": "Send Positive Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 700]
+    },
+    {
+      "parameters": {
+        "path": "velocity-manual",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "manual-velocity-webhook",
+      "name": "Manual Velocity Check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 900],
+      "webhookId": "velocity-manual"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($('Calculate Velocity & Predictions').item.json) }}"
+      },
+      "id": "respond-velocity-manual",
+      "name": "Respond Velocity Data",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1650, 900]
+    },
+    {
+      "parameters": {
+        "path": "file-completed",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "file-completed-webhook",
+      "name": "File Completed Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 1100],
+      "webhookId": "file-completed"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Update file tracking when file is completed\nconst payload = $input.item.json.body || $input.item.json;\nconst filePath = payload.file_path;\nconst agent = payload.agent || 'unknown';\nconst timestamp = new Date().toISOString();\n\n// Validate required fields\nif (!filePath) {\n  return {\n    json: {\n      success: false,\n      error: 'Missing required field: file_path',\n      timestamp: timestamp\n    }\n  };\n}\n\nconst Redis = require('ioredis');\nlet redis;\ntry {\n  redis = new Redis({host: process.env.REDIS_HOST || 'redis', port: 6379});\n\n  // Update file tracking\n  const rawTracking = await redis.hget('state:data', 'file_tracking');\n  const fileTracking = JSON.parse(rawTracking || '{}');\n  fileTracking[filePath] = 'completed';\n  await redis.hset('state:data', 'file_tracking', JSON.stringify(fileTracking));\n\n  // Log completion event\n  await redis.zadd('file:completions', Date.now(), JSON.stringify({\n    file: filePath,\n    agent: agent,\n    timestamp: timestamp\n  }));\n\n  const totalCompleted = Object.values(fileTracking).filter(s => s === 'completed').length;\n  const totalFiles = Object.keys(fileTracking).length;\n\n  await redis.quit();\n\n  return {\n    json: {\n      success: true,\n      file_path: filePath,\n      agent: agent,\n      timestamp: timestamp,\n      total_completed: totalCompleted,\n      total_files: totalFiles,\n      percent_complete: totalFiles > 0 ? Math.floor((totalCompleted / totalFiles) * 100) : 0\n    }\n  };\n} catch(e) {\n  if (redis) await redis.quit();\n  return {\n    json: {\n      success: false,\n      error: e.message,\n      file_path: filePath,\n      timestamp: timestamp\n    }\n  };\n}"
+      },
+      "id": "update-file-tracking",
+      "name": "Update File Tracking",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 1100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({success: $json.success, status: $json.success ? 'tracked' : 'error', error: $json.error || null, file: $json.file_path, agent: $json.agent, total_completed: $json.total_completed, total_files: $json.total_files, percent_complete: $json.percent_complete, timestamp: $json.timestamp}) }}"
+      },
+      "id": "respond-file-tracked",
+      "name": "Respond File Tracked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [650, 1100]
+    }
+  ],
+  "connections": {
+    "Calculate Velocity Every 10 Min": {
+      "main": [
+        [
+          {
+            "node": "Fetch Velocity Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Velocity Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Velocity & Predictions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Velocity & Predictions": {
+      "main": [
+        [
+          {
+            "node": "Save Velocity to History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Velocity to History": {
+      "main": [
+        [
+          {
+            "node": "Update State with Velocity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update State with Velocity": {
+      "main": [
+        [
+          {
+            "node": "Check Crunch Mode Activation",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Schedule Warning",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Positive Trend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Crunch Mode Activation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Crunch Mode Activation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Crunch Mode Activation": {
+      "main": [
+        [
+          {
+            "node": "Radagast - Activate Crunch Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Radagast - Activate Crunch Mode": {
+      "main": [
+        [
+          {
+            "node": "Parse Crunch Mode Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Crunch Mode Plan": {
+      "main": [
+        [
+          {
+            "node": "Save Crunch Mode Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Crunch Mode Plan": {
+      "main": [
+        [
+          {
+            "node": "Notify Pippin - Crunch Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Pippin - Crunch Mode": {
+      "main": [
+        [
+          {
+            "node": "Send Crunch Mode Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Schedule Warning": {
+      "main": [
+        [
+          {
+            "node": "Send Schedule Warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Positive Trend": {
+      "main": [
+        [
+          {
+            "node": "Send Positive Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Velocity Check": {
+      "main": [
+        [
+          {
+            "node": "Fetch Velocity Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update State with Velocity": {
+      "main": [
+        [
+          {
+            "node": "Respond Velocity Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File Completed Event": {
+      "main": [
+        [
+          {
+            "node": "Update File Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update File Tracking": {
+      "main": [
+        [
+          {
+            "node": "Respond File Tracked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-12-14T00:00:00.000Z",
+  "versionId": "1"
+}

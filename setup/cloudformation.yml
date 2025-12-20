@@ -1,0 +1,520 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ILUVATAR 3.0 - Multi-tenant Hackathon Orchestration Platform'
+
+# =============================================================================
+# Parameters - Customizable values
+# =============================================================================
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.xlarge
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+      - m5.xlarge
+      - m5.2xlarge
+    Description: EC2 instance type (t3.xlarge recommended for production)
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for SSH access
+
+  AllowSSHFrom:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR block allowed to SSH (default 0.0.0.0/0 = anywhere)
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+    Description: Environment name
+
+  VolumeSize:
+    Type: Number
+    Default: 100
+    MinValue: 50
+    MaxValue: 500
+    Description: Root volume size in GB
+
+  EnableRDS:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create RDS PostgreSQL instance (increases cost)
+
+  EnableElastiCache:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create ElastiCache Redis instance (increases cost)
+
+# =============================================================================
+# Conditions
+# =============================================================================
+Conditions:
+  CreateRDS: !Equals [!Ref EnableRDS, 'true']
+  CreateElastiCache: !Equals [!Ref EnableElastiCache, 'true']
+
+# =============================================================================
+# Mappings - AMI IDs per region (Amazon Linux 2023)
+# =============================================================================
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0230bd60aa48260c6
+    us-west-1:
+      AMI: ami-0827b6c5b977c020e
+    us-west-2:
+      AMI: ami-0efcece6bed30fd98
+    eu-west-1:
+      AMI: ami-0d71ea30463e0ff8d
+    ap-southeast-1:
+      AMI: ami-0dc2d3e4c0f9ebd18
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+  # ---------------------------------------------------------------------------
+  # VPC and Networking
+  # ---------------------------------------------------------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-VPC'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-IGW'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PublicSubnet'
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PrivateSubnet'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PublicRT'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------------------------------------------------------------------------
+  # Security Groups
+  # ---------------------------------------------------------------------------
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ILUVATAR orchestrator
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # SSH
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowSSHFrom
+          Description: SSH access
+        # HTTP
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+        # HTTPS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+        # Grafana
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+          Description: Grafana UI
+        # Orchestrator API
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          CidrIp: 0.0.0.0/0
+          Description: Orchestrator API
+        # PostgreSQL
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16
+          Description: PostgreSQL (VPC only)
+        # n8n
+        - IpProtocol: tcp
+          FromPort: 5678
+          ToPort: 5678
+          CidrIp: 0.0.0.0/0
+          Description: n8n UI
+        # Redis
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          CidrIp: 10.0.0.0/16
+          Description: Redis (VPC only)
+        # Vault
+        - IpProtocol: tcp
+          FromPort: 8200
+          ToPort: 8200
+          CidrIp: 0.0.0.0/0
+          Description: Vault UI
+        # Prometheus
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          CidrIp: 0.0.0.0/0
+          Description: Prometheus
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-SG'
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for EC2
+  # ---------------------------------------------------------------------------
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: ILUVATARPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 access for archives
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${ArchiveBucket.Arn}'
+                  - !Sub '${ArchiveBucket.Arn}/*'
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-EC2Role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # ---------------------------------------------------------------------------
+  # S3 Bucket for Archives
+  # ---------------------------------------------------------------------------
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'iluvatar-archives-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Archives'
+
+  # ---------------------------------------------------------------------------
+  # EC2 Instance
+  # ---------------------------------------------------------------------------
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-EIP'
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: AttachGateway
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+          SubnetId: !Ref PublicSubnet
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: false
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          # Log all output
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+
+          echo "Starting ILUVATAR installation..."
+
+          # Update system
+          yum update -y
+
+          # Install Docker
+          yum install -y docker
+          systemctl start docker
+          systemctl enable docker
+          usermod -aG docker ec2-user
+
+          # Install Docker Compose
+          curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+
+          # Install git and other tools
+          yum install -y git htop
+
+          # Install Node.js 20
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          yum install -y nodejs
+
+          # Clone repository (modify this URL)
+          cd /home/ec2-user
+          # git clone https://github.com/yourusername/iluvatar-2.0.git
+          # For now, create placeholder
+          mkdir -p iluvatar-2.0
+
+          # Set ownership
+          chown -R ec2-user:ec2-user /home/ec2-user/iluvatar-2.0
+
+          # Create systemd service for orchestrator
+          cat > /etc/systemd/system/iluvatar-orchestrator.service <<'EOF'
+          [Unit]
+          Description=ILUVATAR Orchestrator Service
+          After=docker.service
+          Requires=docker.service
+
+          [Service]
+          Type=simple
+          User=ec2-user
+          WorkingDirectory=/home/ec2-user/iluvatar-2.0
+          ExecStart=/usr/local/bin/docker-compose -f docker-compose.orchestrator.yml up
+          ExecStop=/usr/local/bin/docker-compose -f docker-compose.orchestrator.yml down
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # Enable service (don't start yet - needs .env configuration)
+          systemctl daemon-reload
+          systemctl enable iluvatar-orchestrator
+
+          echo "ILUVATAR installation complete!"
+          echo "Next steps:"
+          echo "1. SSH to instance: ssh -i your-key.pem ec2-user@${ElasticIP}"
+          echo "2. cd iluvatar-2.0"
+          echo "3. Configure .env file"
+          echo "4. sudo systemctl start iluvatar-orchestrator"
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Instance'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIP.AllocationId
+      InstanceId: !Ref EC2Instance
+
+  # ---------------------------------------------------------------------------
+  # RDS PostgreSQL (Optional)
+  # ---------------------------------------------------------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Condition: CreateRDS
+    Properties:
+      DBSubnetGroupDescription: Subnet group for ILUVATAR RDS
+      SubnetIds:
+        - !Ref PublicSubnet
+        - !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-DBSubnetGroup'
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Condition: CreateRDS
+    Properties:
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-postgres'
+      Engine: postgres
+      EngineVersion: '15.4'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: iluvatar
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref InstanceSecurityGroup
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-RDS'
+
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateRDS
+    Properties:
+      Description: RDS PostgreSQL password
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "iluvatar"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  PublicIP:
+    Description: Elastic IP address
+    Value: !Ref ElasticIP
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+
+  SSHCommand:
+    Description: SSH command to connect
+    Value: !Sub 'ssh -i ${KeyName}.pem ec2-user@${ElasticIP}'
+
+  OrchestratorAPI:
+    Description: Orchestrator API endpoint
+    Value: !Sub 'http://${ElasticIP}:3001'
+
+  n8nUI:
+    Description: n8n workflow UI
+    Value: !Sub 'http://${ElasticIP}:5678'
+
+  GrafanaDashboard:
+    Description: Grafana monitoring dashboard
+    Value: !Sub 'http://${ElasticIP}:3000'
+
+  VaultUI:
+    Description: HashiCorp Vault UI
+    Value: !Sub 'http://${ElasticIP}:8200'
+
+  ArchiveBucketName:
+    Description: S3 bucket for hackathon archives
+    Value: !Ref ArchiveBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ArchiveBucket'
+
+  RDSEndpoint:
+    Description: RDS PostgreSQL endpoint (if enabled)
+    Value: !If [CreateRDS, !GetAtt RDSInstance.Endpoint.Address, 'N/A - RDS not enabled']
+    Export:
+      Name: !Sub '${AWS::StackName}-RDSEndpoint'
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VPC'
