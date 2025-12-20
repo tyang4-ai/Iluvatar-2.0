@@ -76,7 +76,8 @@ echo "[6/8] Setting up ILUVATAR directory..."
 cd /home/ec2-user
 
 # If you have a Git repository, uncomment and modify:
-# git clone https://github.com/yourusername/iluvatar-2.0.git
+# git clone https://github.com/tyang4-ai/Random-testing-repo.git
+# cd Random-testing-repo/iluvatar-2.0
 
 # For now, create directory structure
 mkdir -p iluvatar-2.0
@@ -253,7 +254,7 @@ Troubleshooting:
 - Service logs:     sudo journalctl -u iluvatar-orchestrator -f
 - Docker logs:      docker-compose -f docker-compose.orchestrator.yml logs
 
-For help: https://github.com/yourusername/iluvatar-2.0/issues
+For help: https://github.com/tyang4-ai/Random-testing-repo/issues
 EOF
 
 chown ec2-user:ec2-user /home/ec2-user/WELCOME.txt

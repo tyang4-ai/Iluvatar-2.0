@@ -119,8 +119,8 @@ chmod 400 ~/iluvatar-keypair.pem
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/iluvatar-2.0.git
-cd iluvatar-2.0
+git clone https://github.com/tyang4-ai/Random-testing-repo.git
+cd Random-testing-repo/iluvatar-2.0
 
 # Verify you're in the right place
 pwd

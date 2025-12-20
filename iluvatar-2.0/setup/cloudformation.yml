@@ -367,7 +367,8 @@ Resources:
 
           # Clone repository (modify this URL)
           cd /home/ec2-user
-          # git clone https://github.com/yourusername/iluvatar-2.0.git
+          # git clone https://github.com/tyang4-ai/Random-testing-repo.git
+          # cd Random-testing-repo
           # For now, create placeholder
           mkdir -p iluvatar-2.0
 
