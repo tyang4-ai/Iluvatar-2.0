@@ -13,7 +13,7 @@
       "id": "treebeard-webhook",
       "name": "Treebeard Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 100],
       "webhookId": "situational-patience"
     },
@@ -27,7 +27,7 @@
       "id": "aragorn-webhook",
       "name": "Aragorn Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 400],
       "webhookId": "situational-leadership"
     },
@@ -41,7 +41,7 @@
       "id": "eowyn-webhook",
       "name": "Eowyn Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 700],
       "webhookId": "situational-unconventional"
     },
@@ -55,7 +55,7 @@
       "id": "gollum-webhook",
       "name": "Gollum Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 1000],
       "webhookId": "support-edge-cases"
     },
@@ -69,7 +69,7 @@
       "id": "pippin-webhook",
       "name": "Pippin Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 1300],
       "webhookId": "support-serendipity"
     },
@@ -83,7 +83,7 @@
       "id": "merry-webhook",
       "name": "Merry Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 1600],
       "webhookId": "support-help-clone"
     },
@@ -97,7 +97,7 @@
       "id": "quickbeam-webhook",
       "name": "Quickbeam Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 1900],
       "webhookId": "support-prefetch"
     },
@@ -111,7 +111,7 @@
       "id": "bilbo-webhook",
       "name": "Bilbo Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 2200],
       "webhookId": "support-user-prefs"
     },
@@ -125,7 +125,7 @@
       "id": "arwen-webhook",
       "name": "Arwen Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 2500],
       "webhookId": "support-test-plan"
     },
@@ -139,7 +139,7 @@
       "id": "thorin-webhook",
       "name": "Thorin Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 2800],
       "webhookId": "support-write-tests"
     },
@@ -153,7 +153,7 @@
       "id": "eomer-webhook",
       "name": "Eomer Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 3100],
       "webhookId": "support-deploy"
     },
@@ -167,7 +167,7 @@
       "id": "haldir-webhook",
       "name": "Haldir Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 3400],
       "webhookId": "support-verify-deploy"
     },
@@ -181,7 +181,7 @@
       "id": "historian-webhook",
       "name": "Historian Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 3700],
       "webhookId": "support-archive-query"
     },
@@ -195,7 +195,7 @@
       "id": "scribe-webhook",
       "name": "Scribe Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 4000],
       "webhookId": "support-write-experience"
     },
@@ -209,7 +209,7 @@
       "id": "librarian-webhook",
       "name": "Librarian Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "typeVersion": 2,
       "position": [100, 4300],
       "webhookId": "support-repo-query"
     },

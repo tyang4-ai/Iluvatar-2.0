@@ -181,6 +181,7 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
         "path": "dashboard-manual",
         "responseMode": "responseNode",
         "options": {}
@@ -188,7 +189,7 @@
       "id": "manual-dashboard-webhook",
       "name": "Manual Dashboard Trigger",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 900],
       "webhookId": "dashboard-manual"
     },

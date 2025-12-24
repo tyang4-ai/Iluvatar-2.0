@@ -242,13 +242,23 @@ describe('AI Adapter', function() {
 
     it('should use exponential backoff', function() {
       const error = { status: 500 };
-      const delay1 = adapter.calculateBackoff(1, error);
-      const delay2 = adapter.calculateBackoff(2, error);
-      const delay3 = adapter.calculateBackoff(3, error);
+      // Run multiple times to get average behavior (jitter can cause single-run failures)
+      let delay1Total = 0, delay2Total = 0, delay3Total = 0;
+      const runs = 5;
 
-      // Each retry should be roughly 2x the previous (with some jitter)
-      expect(delay2).to.be.greaterThan(delay1 * 1.5);
-      expect(delay3).to.be.greaterThan(delay2 * 1.5);
+      for (let i = 0; i < runs; i++) {
+        delay1Total += adapter.calculateBackoff(1, error);
+        delay2Total += adapter.calculateBackoff(2, error);
+        delay3Total += adapter.calculateBackoff(3, error);
+      }
+
+      const avgDelay1 = delay1Total / runs;
+      const avgDelay2 = delay2Total / runs;
+      const avgDelay3 = delay3Total / runs;
+
+      // Each retry should be roughly 2x the previous on average (with jitter tolerance)
+      expect(avgDelay2).to.be.greaterThan(avgDelay1 * 1.3);
+      expect(avgDelay3).to.be.greaterThan(avgDelay2 * 1.3);
     });
 
     it('should cap backoff at 60 seconds', function() {

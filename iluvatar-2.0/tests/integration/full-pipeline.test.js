@@ -63,9 +63,8 @@ const createMockRedis = () => {
   };
 };
 
-// Skip these integration tests as they require significant API updates
-// TODO: Update tests to match current module APIs
-describe.skip('Full Pipeline Integration Tests', function() {
+// Integration tests - uses mocks, no real API calls
+describe('Full Pipeline Integration Tests', function() {
   let mockRedis;
 
   // Core modules

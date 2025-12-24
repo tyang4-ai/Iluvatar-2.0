@@ -551,20 +551,26 @@ class AdminManager {
 
     try {
       if (service === 'all') {
-        // Restart via systemctl
+        // Restart all services
         await execAsync('sudo systemctl restart iluvatar-orchestrator');
-        results.push({ service: 'iluvatar-orchestrator', status: 'restarted' });
+        results.push({ service: 'orchestrator', status: 'restarted' });
+        await execAsync('docker restart iluvatar-n8n');
+        results.push({ service: 'n8n', status: 'restarted' });
+        await execAsync('docker restart iluvatar-redis');
+        results.push({ service: 'redis', status: 'restarted' });
+        await execAsync('docker restart iluvatar-postgres');
+        results.push({ service: 'postgres', status: 'restarted' });
       } else if (service === 'orchestrator') {
-        await execAsync('docker-compose restart orchestrator');
+        await execAsync('sudo systemctl restart iluvatar-orchestrator');
         results.push({ service: 'orchestrator', status: 'restarted' });
       } else if (service === 'n8n') {
-        await execAsync('docker-compose restart n8n');
+        await execAsync('docker restart iluvatar-n8n');
         results.push({ service: 'n8n', status: 'restarted' });
       } else if (service === 'redis') {
-        await execAsync('docker-compose restart redis');
+        await execAsync('docker restart iluvatar-redis');
         results.push({ service: 'redis', status: 'restarted' });
       } else if (service === 'postgres') {
-        await execAsync('docker-compose restart postgres');
+        await execAsync('docker restart iluvatar-postgres');
         results.push({ service: 'postgres', status: 'restarted' });
       } else {
         throw new Error(`Unknown service: ${service}. Available: all, orchestrator, n8n, redis, postgres`);
@@ -589,10 +595,24 @@ class AdminManager {
     this.verifyOwner(userId, 'admin-logs');
 
     try {
-      const { stdout } = await execAsync(
-        `docker-compose logs --tail=${lines} ${service}`,
-        { maxBuffer: 1024 * 1024 }
-      );
+      let command;
+
+      // Orchestrator runs as systemd service, others are Docker containers
+      if (service === 'orchestrator') {
+        command = `journalctl -u iluvatar-orchestrator -n ${lines} --no-pager 2>/dev/null || docker logs iluvatar-orchestrator --tail=${lines} 2>/dev/null || echo "Orchestrator logs not available"`;
+      } else {
+        // Map service names to container names
+        const containerNames = {
+          'n8n': 'iluvatar-n8n',
+          'redis': 'iluvatar-redis',
+          'postgres': 'iluvatar-postgres',
+          'grafana': 'grafana'
+        };
+        const containerName = containerNames[service] || `iluvatar-${service}`;
+        command = `docker logs ${containerName} --tail=${lines} 2>&1`;
+      }
+
+      const { stdout } = await execAsync(command, { maxBuffer: 1024 * 1024 });
 
       // Truncate if too long for Discord
       let logs = stdout;
@@ -622,22 +642,41 @@ class AdminManager {
     this.verifyOwner(userId, 'admin-status');
 
     try {
-      const { stdout } = await execAsync('docker-compose ps --format json');
-
-      // Parse docker-compose output
       const services = [];
-      const lines = stdout.trim().split('\n').filter(Boolean);
 
-      for (const line of lines) {
+      // Check orchestrator (systemd service)
+      try {
+        const { stdout: orchestratorStatus } = await execAsync(
+          'systemctl is-active iluvatar-orchestrator 2>/dev/null || echo "unknown"'
+        );
+        services.push({
+          name: 'orchestrator',
+          status: orchestratorStatus.trim() === 'active' ? 'running' : orchestratorStatus.trim(),
+          health: orchestratorStatus.trim() === 'active' ? 'healthy' : 'N/A'
+        });
+      } catch {
+        services.push({ name: 'orchestrator', status: 'unknown', health: 'N/A' });
+      }
+
+      // Check Docker containers
+      const containerNames = ['iluvatar-n8n', 'iluvatar-redis', 'iluvatar-postgres', 'grafana'];
+      for (const containerName of containerNames) {
         try {
-          const svc = JSON.parse(line);
+          const { stdout } = await execAsync(
+            `docker inspect --format='{{.State.Status}}' ${containerName} 2>/dev/null || echo "not found"`
+          );
+          const status = stdout.trim();
           services.push({
-            name: svc.Service || svc.Name,
-            status: svc.State || svc.Status,
-            health: svc.Health || 'N/A'
+            name: containerName.replace('iluvatar-', ''),
+            status: status,
+            health: status === 'running' ? 'healthy' : 'N/A'
           });
         } catch {
-          // Non-JSON output
+          services.push({
+            name: containerName.replace('iluvatar-', ''),
+            status: 'not found',
+            health: 'N/A'
+          });
         }
       }
 

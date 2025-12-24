@@ -12,7 +12,7 @@
       "id": "shadowfax-webhook",
       "name": "Shadowfax Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 100],
       "webhookId": "shadowfax-context-warning"
     },
@@ -26,7 +26,7 @@
       "id": "galadriel-webhook",
       "name": "Galadriel Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 400],
       "webhookId": "galadriel-file-written"
     },
@@ -40,7 +40,7 @@
       "id": "elrond-webhook",
       "name": "Elrond Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 700],
       "webhookId": "elrond-test-failed"
     },
@@ -54,7 +54,7 @@
       "id": "faramir-webhook",
       "name": "Faramir Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 1000],
       "webhookId": "faramir-pre-submission"
     },

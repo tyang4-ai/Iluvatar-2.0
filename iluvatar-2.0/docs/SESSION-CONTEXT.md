@@ -7,7 +7,7 @@
 ---
 
 ## Current Objective
-**ILUVATAR 2.0 COMPLETE** ✅ | **ILUVATAR 3.0 COMPLETE** ✅ | **AWS DEPLOYMENT READY** ✅ | **DISCORD ADMIN COMMANDS** ✅ | **PHASE 8 ENHANCEMENTS** ✅ | **PHASE 9 PLANNING MODE** ✅ | **PHASE 10 RELIABILITY** ✅ | **PHASE 11 IMPROVEMENTS** ✅ | **PHASE 12 SECURITY FIXES** ✅ | **PHASE 13 N8N & TESTS** ✅ | **100% COMPLETE**
+**PHASE 15: PRODUCTION TESTING & BUG FIXES** 🔄 IN PROGRESS
 
 ---
 
@@ -27,6 +27,232 @@
 | PHASE 11: Remaining Improvements | ✅ COMPLETE | 2025-12-19 |
 | PHASE 12: Security & Error Handling Fixes | ✅ COMPLETE | 2025-12-19 |
 | PHASE 13: n8n Workflow Fixes & Test Suite | ✅ COMPLETE | 2025-12-20 |
+| PHASE 14: AWS Deployment | ✅ COMPLETE | 2025-12-22 |
+| PHASE 15: Production Testing & Bug Fixes | 🔄 IN PROGRESS | 2025-12-23 |
+
+---
+
+## PHASE 15 IN PROGRESS - Production Testing & Bug Fixes (2025-12-23)
+
+### Overview
+Running chaos and integration tests on the **live EC2 production pipeline** to verify real-world robustness. Tests run ON the EC2 instance against localhost services.
+
+### Production Test Results (Chaos Tests on EC2)
+
+```
+13 passing
+9 failing
+```
+
+### Root Cause Analysis
+
+The **Debugging Pyramid workflow** (`02-debugging-pyramid.json`) returns **empty responses** because:
+
+1. **HTTP Request nodes have no error handling** - No `continueOnFail` or `onError` configured
+2. **When requests fail, execution stops** - No `respondToWebhook` node is reached
+3. **Missing retry URL causes silent failure** - L1 expects `retry_webhook_url` but tests don't always provide it
+
+### Failing Tests (All in Debugging Pyramid)
+
+| Test | Expected | Actual | Root Cause |
+|------|----------|--------|------------|
+| L1: Rate limit recovery | `{layer: 'L1', status: 'RESOLVED'}` | Empty response | HTTP retry fails, no error path |
+| L1: API timeout recovery | `{layer: 'L1'}` | `undefined` | Same issue |
+| L1: Escalate to L2 | `{layer: 'L2'}` | `undefined` | Same issue |
+| L2: Escalate to L3 | `{layer: 'L3'}` | `undefined` | API call fails, no error path |
+| L3: Escalate to L4 | `{layer: 'L4'}` | `undefined` | Same issue |
+| L4: Escalate to L5 | `{layer: 'L5'}` | `undefined` | Same issue |
+| L5: Escalate to L6 | `{layer: 'L6'}` | `undefined` | Same issue |
+| L6: Generate debug report | `{layer: 'L6', debug_report: {...}}` | `undefined` | Same issue |
+| L6: Pause pipeline | `pipeline_status: 'PAUSED'` | `null` | State not updated |
+
+### Planned Fixes
+
+1. **Add error handling to all HTTP Request nodes** in `02-debugging-pyramid.json`:
+   - `Retry Original Request`
+   - `Treebeard L2 - Generate Solutions`
+   - `Treebeard L3 - Alternative Strategies`
+   - `Execute Swarm Agent`
+   - `Treebeard L5 - Max Intelligence`
+
+2. **Add L2 escalation for missing retry URL** - If no `retry_webhook_url`, escalate to L2 instead of failing
+
+3. **Add error response nodes** - Each layer needs a `respondToWebhook` node for error cases
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `n8n-workflows/02-debugging-pyramid.json` | Add error handling, escalation paths, error response nodes |
+
+### Test Verification Command
+
+```bash
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194 "cd ~/iluvatar-2.0 && \
+  N8N_WEBHOOK_URL=http://localhost:5678/webhook \
+  REDIS_HOST=localhost \
+  npm test -- --grep 'Chaos' --timeout 300000"
+```
+
+### Completed Steps
+
+- [x] Fixed n8n webhook POST method issue (typeVersion 1 → 2)
+- [x] Fixed workflow_history missing entries for activation
+- [x] All 9 workflows active and accepting POST requests
+- [x] Ran chaos tests on EC2 production (13 pass, 9 fail)
+- [x] Identified root cause: missing error handling in Debugging Pyramid
+- [x] Created detailed fix plan
+- [ ] **IN PROGRESS**: Fix Debugging Pyramid workflow
+- [ ] Re-deploy to EC2
+- [ ] All 22 chaos tests passing
+
+### RESUME HERE - Next Steps
+
+**1. Rewrite `n8n-workflows/02-debugging-pyramid.json`** with these changes:
+
+**New nodes to add:**
+- `Check Escalate to L2` (IF node) - after `L1 - Execute Smart Retry`
+- `L1 Error Response` (respondToWebhook) - for retry failures
+- `L2 Error Response` (respondToWebhook) - for Treebeard L2 API failures
+- `L3 Error Response` (respondToWebhook) - for Treebeard L3 API failures
+- `L4 Error Response` (respondToWebhook) - for swarm agent API failures
+- `L5 Error Response` (respondToWebhook) - for Treebeard L5 API failures
+
+**Nodes to modify:**
+- `L1 - Execute Smart Retry`: Check for missing `retry_webhook_url`, set `escalate_to_l2: true` if missing
+- `Retry Original Request`: Add `"onError": "continueErrorOutput"` and `"options": {"timeout": 60000}`
+- `Treebeard L2 - Generate Solutions`: Add `"onError": "continueErrorOutput"`
+- `Treebeard L3 - Alternative Strategies`: Add `"onError": "continueErrorOutput"`
+- `Execute Swarm Agent`: Add `"onError": "continueErrorOutput"`
+- `Treebeard L5 - Max Intelligence`: Add `"onError": "continueErrorOutput"`
+
+**New connections to add:**
+- `L1 - Execute Smart Retry` → `Check Escalate to L2`
+- `Check Escalate to L2` (true) → `Prepare Treebeard L2`
+- `Check Escalate to L2` (false) → `Retry Original Request`
+- `Retry Original Request` (error output) → `L1 Error Response`
+- `Treebeard L2 - Generate Solutions` (error output) → `L2 Error Response`
+- etc.
+
+**2. Deploy to EC2:**
+```bash
+scp -i iluvatar-keypair.pem n8n-workflows/02-debugging-pyramid.json ec2-user@50.18.245.194:~/iluvatar-2.0/n8n-workflows/
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194 "docker restart iluvatar-n8n"
+```
+
+**3. Run tests:**
+```bash
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194 "cd ~/iluvatar-2.0 && N8N_WEBHOOK_URL=http://localhost:5678/webhook REDIS_HOST=localhost npm test -- --grep 'Chaos' --timeout 300000"
+```
+
+---
+
+## PHASE 14 COMPLETED WORK - AWS Deployment (2025-12-22)
+
+### Overview
+Successfully deployed ILUVATAR to AWS us-west-1 region with all services running.
+
+### Deployment Details
+
+| Component | Value |
+|-----------|-------|
+| **Public IP** | 50.18.245.194 |
+| **Region** | us-west-1 (N. California) |
+| **Instance Type** | t3.xlarge (4 vCPU, 16GB RAM) |
+| **Stack Name** | iluvatar-production |
+
+### Service URLs
+
+| Service | URL | Status |
+|---------|-----|--------|
+| n8n Workflows | http://50.18.245.194:5678 | ✅ Running |
+| Grafana | http://50.18.245.194:3000 | ✅ Running |
+| Redis | localhost:6379 | ✅ Running |
+| PostgreSQL | localhost:5432 | ✅ Running |
+
+### SSH Access
+```bash
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194
+```
+
+### n8n Workflows Imported & Activated (9 Total)
+All workflows showing `active = true` in PostgreSQL:
+
+| Workflow ID | Name | Status |
+|-------------|------|--------|
+| jeg4bvYK3XIJpsHj | ILUVATAR Master Pipeline | ✅ Active |
+| WrGHXazXqFJgnj7y | Debugging Pyramid - 6 Layer Escalation | ✅ Active |
+| ZJQzVBDL6rTnAwYb | ILUVATAR 2.0 - Support & Situational Agents | ✅ Active |
+| CFabLdHIyitRdTlD | ILUVATAR Backend Clone Handler (Gimli) | ✅ Active |
+| 1HytYMnvouxBFWlw | Micro-Checkpoints Handler | ✅ Active |
+| xIQq35cQLYwEIqXl | ILUVATAR Frontend Clone Handler (Legolas) | ✅ Active |
+| 8uQniKBKgFwU5RyD | Discord Dashboard - Real-time Updates | ✅ Active |
+| 4 | ILUVATAR Event Agents (Tier 2) | ✅ Active |
+| W3Tbfx9Opal9bLZ3 | Velocity Tracking & Crunch Mode | ✅ Active |
+
+### n8n Credentials Configured
+- Anthropic API credential imported
+
+### Issues Fixed During Deployment
+
+1. **n8n Secure Cookie Error**
+   - Error: "Your n8n server is configured to use a secure cookie"
+   - Fix: Added `N8N_SECURE_COOKIE=false` to docker-compose.local.yml
+
+2. **Grafana Login Failure**
+   - Issue: Could not log in with default credentials
+   - Fix: Recreated container with explicit env vars:
+     - `GF_SECURITY_ADMIN_USER=admin`
+     - `GF_SECURITY_ADMIN_PASSWORD=iluvatar-grafana-2025`
+
+3. **n8n 2.0 Workflow Publishing**
+   - Issue: Workflows showed "not published" with no activate option
+   - Root Cause: n8n 2.0 requires workflow_history entries
+   - Fix: Created workflow versions in PostgreSQL:
+     ```sql
+     -- Created workflow history entries
+     INSERT INTO workflow_history ("versionId", "workflowId", ...)
+     SELECT gen_random_uuid()::varchar(36), id, ...
+     FROM workflow_entity;
+
+     -- Linked workflows to versions
+     UPDATE workflow_entity SET "activeVersionId" = wh."versionId"
+     FROM workflow_history wh WHERE id = wh."workflowId";
+
+     -- Activated all workflows
+     UPDATE workflow_entity SET active = true;
+     ```
+
+### Environment Variables Configured
+All credentials from "ALL THE KEYS" file configured in `.env`:
+- `ANTHROPIC_API_KEY` ✅
+- `DISCORD_BOT_TOKEN` ✅
+- `DISCORD_CLIENT_ID` ✅
+- `DISCORD_GUILD_ID` ✅
+- `ADMIN_CHANNEL_ID` ✅
+- `DISCORD_OWNER_ID` ✅
+- `POSTGRES_PASSWORD` ✅
+- `REDIS_PASSWORD` ✅
+- `N8N_ENCRYPTION_KEY` ✅
+- `VAULT_ROOT_TOKEN` ✅
+
+### Local Tests Passed (Pre-Deployment)
+```
+542 passing (5s)
+70 pending (skipped integration/chaos/e2e tests)
+0 failing
+```
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `.gitignore` | Added `ALL THE KEYS*` and `*KEYS*` patterns |
+| `docker-compose.local.yml` | Added `N8N_SECURE_COOKIE=false` |
+
+### Remaining Verification Steps
+- [ ] Test Discord bot responds to /status command
+- [ ] Test health endpoint returns healthy
+- [ ] Create test hackathon to verify full pipeline
 
 ---
 

@@ -273,6 +273,7 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
         "path": "velocity-manual",
         "responseMode": "responseNode",
         "options": {}
@@ -280,7 +281,7 @@
       "id": "manual-velocity-webhook",
       "name": "Manual Velocity Check",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 900],
       "webhookId": "velocity-manual"
     },
@@ -297,6 +298,7 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
         "path": "file-completed",
         "responseMode": "responseNode",
         "options": {}
@@ -304,7 +306,7 @@
       "id": "file-completed-webhook",
       "name": "File Completed Event",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [250, 1100],
       "webhookId": "file-completed"
     },

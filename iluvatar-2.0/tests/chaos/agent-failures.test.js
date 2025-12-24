@@ -18,9 +18,8 @@ const Redis = require('ioredis');
 const { expect } = require('chai');
 const sinon = require('sinon');
 
-// Skip chaos engineering tests by default - they require full infrastructure (Redis + n8n with workflows)
-// Run with ENABLE_CHAOS=true to enable: ENABLE_CHAOS=true npm test
-describe.skip('Chaos Engineering: Agent Failures', function() {
+// Chaos engineering tests - requires full infrastructure (Redis + n8n with workflows)
+describe('Chaos Engineering: Agent Failures', function() {
   this.timeout(300000); // 5 minute timeout
 
   let redis;
