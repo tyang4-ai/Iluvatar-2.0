@@ -1,0 +1,688 @@
+{
+  "name": "Micro-Checkpoints Handler",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "micro-checkpoint",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "checkpoint-webhook",
+      "name": "Checkpoint Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "micro-checkpoint"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse checkpoint request\nconst checkpoint = $input.item.json.body;\n\nconst checkpointConfig = {\n  '1_idea_approval': {\n    name: 'Idea Approval',\n    type: 'MAJOR',\n    auto_approve_minutes: null,\n    requires_explicit_approval: true,\n    message_template: '🎯 **Checkpoint 1: Idea Approval**\\n\\nGandalf has generated 3 hackathon ideas. Please review and approve one.'\n  },\n  '2_platform_selection': {\n    name: 'Platform Selection',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🌐 **Checkpoint 2: Platform Selection**\\n\\nRecommended platform: {platform}\\n\\nAuto-approving in 15 minutes unless you object.'\n  },\n  '3_architecture_approval': {\n    name: 'Architecture Approval',\n    type: 'MAJOR',\n    auto_approve_minutes: null,\n    requires_explicit_approval: true,\n    message_template: '🏗️ **Checkpoint 3: Architecture Approval**\\n\\nRadagast has designed the architecture. Please review before coding begins.'\n  },\n  '4_tech_stack_confirmation': {\n    name: 'Tech Stack Confirmation',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🛠️ **Checkpoint 4: Tech Stack Confirmation**\\n\\nFrontend: {frontend}\\nBackend: {backend}\\nDatabase: {database}\\n\\nAuto-approving in 15 minutes.'\n  },\n  '5_backend_routes_review': {\n    name: 'Backend Routes Review',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🔌 **Checkpoint 5: Backend Routes Review**\\n\\n{route_count} API routes generated. Auto-approving in 15 minutes.'\n  },\n  '6_frontend_design_direction': {\n    name: 'Frontend Design Direction',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🎨 **Checkpoint 6: Frontend Design Direction**\\n\\nColor scheme: {colors}\\nUI library: {ui_library}\\n\\nAuto-approving in 15 minutes.'\n  },\n  '7_code_complete': {\n    name: 'Code Complete',\n    type: 'MAJOR',\n    auto_approve_minutes: null,\n    requires_explicit_approval: true,\n    message_template: '✅ **Checkpoint 7: Code Complete**\\n\\nAll code generated. Please review before testing.'\n  },\n  '8_integration_smoke_test': {\n    name: 'Integration Smoke Test',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🧪 **Checkpoint 8: Integration Smoke Test**\\n\\nIntegration tests passed. Auto-approving in 15 minutes.'\n  },\n  '9_tests_passed': {\n    name: 'Tests Passed',\n    type: 'MAJOR',\n    auto_approve_minutes: null,\n    requires_explicit_approval: true,\n    message_template: '🧪 **Checkpoint 9: Tests Passed**\\n\\nAll tests passed. Ready to deploy.'\n  },\n  '10_demo_script_review': {\n    name: 'Demo Script Review',\n    type: 'MICRO',\n    auto_approve_minutes: 15,\n    requires_explicit_approval: false,\n    message_template: '🎬 **Checkpoint 10: Demo Script Review**\\n\\nDemo flow ready. Auto-approving in 15 minutes.'\n  },\n  '11_deployment_confirmation': {\n    name: 'Deployment Confirmation',\n    type: 'MAJOR',\n    auto_approve_minutes: null,\n    requires_explicit_approval: true,\n    message_template: '🚀 **Checkpoint 11: Deployment Confirmation**\\n\\nDeployment successful! {url}'\n  }\n};\n\nconst config = checkpointConfig[checkpoint.checkpoint_name];\n\nif (!config) {\n  return {\n    json: {\n      error: 'Unknown checkpoint',\n      checkpoint_name: checkpoint.checkpoint_name\n    }\n  };\n}\n\nreturn {\n  json: {\n    checkpoint_name: checkpoint.checkpoint_name,\n    config: config,\n    payload: checkpoint.payload,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "parse-checkpoint",
+      "name": "Parse Checkpoint Config",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const inputData = $input.all();\n  const data = inputData[0]?.json || {};\n  await redis.hmset('state:data', data);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "save-checkpoint-state",
+      "name": "Save Checkpoint to Redis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare Pippin Discord message\nconst systemPrompt = \"You are Pippin, the Discord concierge. Format messages for Discord notifications and user updates.\";\n\nconst checkpoint = $input.item.json;\n\n// Format message with payload data\nlet message = checkpoint.config.message_template;\nif (checkpoint.payload) {\n  Object.keys(checkpoint.payload).forEach(key => {\n    message = message.replace(`{${key}}`, checkpoint.payload[key]);\n  });\n}\n\nreturn {\n  json: {\n    agent: 'pippin',\n    systemPrompt: systemPrompt,\n    input: {\n      event_type: 'checkpoint',\n      checkpoint: checkpoint,\n      message: message,\n      buttons: checkpoint.config.requires_explicit_approval ? \n        ['✅ Approve', '❌ Reject', '💬 Provide Feedback'] : \n        ['✅ Approve Now', '⏸️ Wait']\n    }\n  }\n};"
+      },
+      "id": "prepare-pippin-message",
+      "name": "Prepare Pippin Message",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-sonnet-4-20250514', max_tokens: 2048, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "pippin-format-message",
+      "name": "Pippin - Format Checkpoint Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Pippin response\nconst response = $input.item.json.content[0].text;\nconst result = JSON.parse(response);\n\nreturn {\n  json: {\n    discord_message: result.discord_message,\n    buttons: result.buttons || []\n  }\n};"
+      },
+      "id": "parse-pippin-message",
+      "name": "Parse Pippin Message",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: $json.discord_message, components: [{type: 1, components: $json.buttons.map((btn, idx) => ({type: 2, style: idx === 0 ? 3 : (idx === 1 ? 4 : 1), label: btn, custom_id: 'checkpoint_' + idx}))}]}) }}"
+      },
+      "id": "send-discord-message",
+      "name": "Send Discord Message with Buttons",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Parse Checkpoint Config').item.json.config.requires_explicit_approval }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "id": "check-auto-approve",
+      "name": "Check Auto-Approve",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('Parse Checkpoint Config').item.json.config.auto_approve_minutes }}",
+        "unit": "minutes"
+      },
+      "id": "wait-auto-approve",
+      "name": "Wait for Auto-Approve Timeout",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1850,
+        200
+      ],
+      "webhookId": "auto-approve-wait"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HGET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const result = await redis.hget('state:data', 'data');\n  return { json: { value: result } };\n} catch (err) {\n  console.error('Redis HGET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "check-manual-response",
+      "name": "Check for Manual Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json }}",
+              "value2": "PENDING"
+            }
+          ]
+        }
+      },
+      "id": "check-still-pending",
+      "name": "Still Pending?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const inputData = $input.all();\n  const data = inputData[0]?.json || {};\n  await redis.hmset('state:data', data);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "auto-approve-checkpoint",
+      "name": "Auto-Approve Checkpoint",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '⏰ Checkpoint auto-approved after timeout. Continuing pipeline...'}) }}"
+      },
+      "id": "notify-auto-approved",
+      "name": "Notify Auto-Approved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2650,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:5678/webhook/checkpoint-approved",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({checkpoint_name: $('Parse Checkpoint Config').item.json.checkpoint_name, approved: true, approval_type: 'auto'}) }}"
+      },
+      "id": "trigger-continue-pipeline",
+      "name": "Trigger Pipeline Continue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2850,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Checkpoint registered. Awaiting response."
+      },
+      "id": "respond-checkpoint-registered",
+      "name": "Respond - Checkpoint Registered",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "checkpoint-response",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "checkpoint-response-webhook",
+      "name": "Checkpoint Response Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        600
+      ],
+      "webhookId": "checkpoint-response"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process user response from Discord button click\nconst response = $input.item.json.body;\n\nconst action = response.action; // 'approve', 'reject', 'feedback'\nconst checkpointName = response.checkpoint_name;\nconst feedback = response.feedback || null;\n\nreturn {\n  json: {\n    checkpoint_name: checkpointName,\n    action: action,\n    feedback: feedback,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "parse-user-response",
+      "name": "Parse User Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "value2": "approve"
+            }
+          ]
+        }
+      },
+      "id": "check-approval-action",
+      "name": "Check Approval Action",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        650,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const inputData = $input.all();\n  const data = inputData[0]?.json || {};\n  await redis.hmset('state:data', data);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "save-manual-approval",
+      "name": "Save Manual Approval",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '✅ Checkpoint approved by user. Continuing pipeline...'}) }}"
+      },
+      "id": "notify-manual-approved",
+      "name": "Notify Manual Approved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:5678/webhook/checkpoint-approved",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({checkpoint_name: $('Parse User Response').item.json.checkpoint_name, approved: true, approval_type: 'manual'}) }}"
+      },
+      "id": "trigger-manual-continue",
+      "name": "Trigger Manual Continue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status: 'approved', checkpoint: $('Parse User Response').item.json.checkpoint_name}) }}"
+      },
+      "id": "respond-approved",
+      "name": "Respond - Approved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const inputData = $input.all();\n  const data = inputData[0]?.json || {};\n  await redis.hmset('state:data', data);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "save-rejection",
+      "name": "Save Rejection",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '❌ Checkpoint rejected by user. Pausing pipeline...\\n\\nReason: ' + ($('Parse User Response').item.json.feedback || 'No reason provided')}) }}"
+      },
+      "id": "notify-rejected",
+      "name": "Notify Rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const inputData = $input.all();\n  const data = inputData[0]?.json || {};\n  await redis.hmset('state:data', data);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "pause-pipeline-rejected",
+      "name": "Pause Pipeline",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status: 'rejected', checkpoint: $('Parse User Response').item.json.checkpoint_name, reason: $('Parse User Response').item.json.feedback}) }}"
+      },
+      "id": "respond-rejected",
+      "name": "Respond - Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        700
+      ]
+    }
+  ],
+  "connections": {
+    "Checkpoint Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Checkpoint Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Checkpoint Config": {
+      "main": [
+        [
+          {
+            "node": "Save Checkpoint to Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Checkpoint to Redis": {
+      "main": [
+        [
+          {
+            "node": "Prepare Pippin Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Pippin Message": {
+      "main": [
+        [
+          {
+            "node": "Pippin - Format Checkpoint Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pippin - Format Checkpoint Message": {
+      "main": [
+        [
+          {
+            "node": "Parse Pippin Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Pippin Message": {
+      "main": [
+        [
+          {
+            "node": "Send Discord Message with Buttons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Discord Message with Buttons": {
+      "main": [
+        [
+          {
+            "node": "Check Auto-Approve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Auto-Approve": {
+      "main": [
+        [
+          {
+            "node": "Wait for Auto-Approve Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Checkpoint Registered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Auto-Approve Timeout": {
+      "main": [
+        [
+          {
+            "node": "Check for Manual Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Manual Response": {
+      "main": [
+        [
+          {
+            "node": "Still Pending?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Pending?": {
+      "main": [
+        [
+          {
+            "node": "Auto-Approve Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Approve Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Notify Auto-Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Auto-Approved": {
+      "main": [
+        [
+          {
+            "node": "Trigger Pipeline Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checkpoint Response Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse User Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse User Response": {
+      "main": [
+        [
+          {
+            "node": "Check Approval Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval Action": {
+      "main": [
+        [
+          {
+            "node": "Save Manual Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Manual Approval": {
+      "main": [
+        [
+          {
+            "node": "Notify Manual Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Manual Approved": {
+      "main": [
+        [
+          {
+            "node": "Trigger Manual Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Manual Continue": {
+      "main": [
+        [
+          {
+            "node": "Respond - Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Rejection": {
+      "main": [
+        [
+          {
+            "node": "Notify Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Rejected": {
+      "main": [
+        [
+          {
+            "node": "Pause Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pause Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Respond - Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-12-14T00:00:00.000Z",
+  "versionId": "1"
+}

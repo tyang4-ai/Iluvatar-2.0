@@ -1,0 +1,46 @@
+# =============================================================================
+# ILUVATAR 3.0 - Hackathon Container Dockerfile
+# =============================================================================
+# Self-contained environment for each hackathon with:
+# - Node.js runtime
+# - ILUVATAR 2.0 codebase (pre-installed)
+# - n8n workflow engine
+# - All dependencies
+# =============================================================================
+
+FROM node:20-alpine
+
+WORKDIR /app/iluvatar
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    git \
+    openssh-client \
+    curl \
+    wget \
+    tzdata \
+    libc6-compat \
+    bash
+
+# Copy package files first for better caching
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy the entire codebase
+COPY . .
+
+# Create data directories
+RUN mkdir -p /app/iluvatar/data /app/iluvatar/logs /app/iluvatar/workspaces
+
+# Environment defaults
+ENV NODE_ENV=production
+ENV N8N_PORT=5678
+ENV APP_PORT=3000
+
+# Expose ports
+EXPOSE 5678 3000
+
+# Keep container running - orchestrator will exec commands into it
+CMD ["tail", "-f", "/dev/null"]

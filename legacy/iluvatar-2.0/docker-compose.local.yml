@@ -1,0 +1,129 @@
+# ILUVATAR Local Testing Stack
+#
+# Single docker-compose for local n8n testing without container-in-container.
+# Use this for development and testing workflows locally.
+#
+# Usage:
+#   docker-compose -f docker-compose.local.yml up -d
+#   OR
+#   ./scripts/local-test.sh
+#
+# Access:
+#   n8n:        http://localhost:5678
+#   Redis:      localhost:6379
+#   PostgreSQL: localhost:5432
+
+version: '3.8'
+
+services:
+  # n8n Workflow Engine
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: iluvatar-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./n8n-workflows:/home/node/.n8n/workflows:ro
+      - ./agents:/data/agents:ro
+      - n8n_data:/home/node/.n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=UTC
+      # Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # Database connection
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=iluvatar
+      - DB_POSTGRESDB_USER=iluvatar
+      - DB_POSTGRESDB_PASSWORD=localdev
+      # AI Provider Keys (from host environment)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # GitHub (optional)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - iluvatar-local
+
+  # Redis for pub/sub and state
+  redis:
+    image: redis:7-alpine
+    container_name: iluvatar-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - iluvatar-local
+
+  # PostgreSQL for registry
+  postgres:
+    image: postgres:15-alpine
+    container_name: iluvatar-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: iluvatar
+      POSTGRES_USER: iluvatar
+      POSTGRES_PASSWORD: localdev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./setup/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./setup/hackathon-registry.sql:/docker-entrypoint-initdb.d/02-registry.sql:ro
+    networks:
+      - iluvatar-local
+
+  # Redis Commander (optional, for debugging)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: iluvatar-redis-ui
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    profiles:
+      - debug
+    networks:
+      - iluvatar-local
+
+  # pgAdmin (optional, for debugging)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: iluvatar-pgadmin
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@iluvatar.local
+      PGADMIN_DEFAULT_PASSWORD: localdev
+    depends_on:
+      - postgres
+    profiles:
+      - debug
+    networks:
+      - iluvatar-local
+
+volumes:
+  n8n_data:
+  redis_data:
+  postgres_data:
+
+networks:
+  iluvatar-local:
+    driver: bridge

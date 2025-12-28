@@ -1,0 +1,15 @@
+FROM n8nio/n8n:1.94.1
+
+USER root
+
+# Create a modules directory and install ioredis there
+RUN mkdir -p /opt/custom-modules && \
+    cd /opt/custom-modules && \
+    npm init -y && \
+    npm install ioredis
+
+# Set environment variables for n8n to find the module
+ENV NODE_FUNCTION_ALLOW_EXTERNAL=ioredis
+ENV NODE_PATH=/opt/custom-modules/node_modules
+
+USER node

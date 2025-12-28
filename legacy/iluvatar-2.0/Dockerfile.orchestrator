@@ -1,0 +1,95 @@
+# =============================================================================
+# ILUVATAR 3.0 - Orchestrator Dockerfile
+# =============================================================================
+# Multi-stage build for the orchestrator service.
+# Includes Node.js runtime, Docker CLI, and all dependencies.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache python3 make g++ git
+
+# Copy package files
+COPY package*.json ./
+COPY orchestrator/package*.json ./orchestrator/
+
+# Install dependencies
+RUN npm ci --only=production
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/orchestrator/node_modules ./orchestrator/node_modules
+
+# Copy source code
+COPY . .
+
+# -----------------------------------------------------------------------------
+# Stage 3: Production
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS production
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    # Docker CLI for container management
+    docker-cli \
+    docker-cli-compose \
+    # For PDF processing
+    poppler-utils \
+    # For Git operations
+    git \
+    openssh-client \
+    # For health checks
+    curl \
+    wget \
+    # For timezone support
+    tzdata \
+    # For native dependencies
+    libc6-compat
+
+# Create non-root user
+RUN addgroup -g 1001 -S iluvatar && \
+    adduser -S iluvatar -u 1001 -G iluvatar
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs /workspaces && \
+    chown -R iluvatar:iluvatar /app /workspaces
+
+# Copy built application
+COPY --from=builder --chown=iluvatar:iluvatar /app/node_modules ./node_modules
+COPY --from=builder --chown=iluvatar:iluvatar /app/orchestrator ./orchestrator
+COPY --from=builder --chown=iluvatar:iluvatar /app/core ./core
+COPY --from=builder --chown=iluvatar:iluvatar /app/agents ./agents
+COPY --from=builder --chown=iluvatar:iluvatar /app/package*.json ./
+
+# Set environment
+ENV NODE_ENV=production
+ENV PORT=3001
+
+# Expose API port
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
+
+# Run as non-root user (but Docker socket access may require root)
+# Comment out for Docker socket access
+# USER iluvatar
+
+# Start orchestrator
+CMD ["node", "orchestrator/index.js"]

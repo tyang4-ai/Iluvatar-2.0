@@ -1,0 +1,1635 @@
+{
+  "name": "ILUVATAR Master Pipeline",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "iluvatar-webhook",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "iluvatar-start"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "control-message",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "control-webhook",
+      "name": "Control Message Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        100
+      ],
+      "webhookId": "control-message"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse control message and determine workflow mode\nconst payload = $input.item.json.body;\n\nconst mode = payload.type || 'full_auto';\nconst hackathonId = payload.hackathon_id;\n\nreturn {\n  json: {\n    mode: mode,\n    hackathon_id: hackathonId,\n    skip_execution: payload.skip_execution || false,\n    auto_approve: payload.auto_approve || false,\n    target_phase: payload.phase || null,\n    use_custom_plan: payload.use_custom_plan || false,\n    custom_plan: payload.custom_plan || null,\n    yolo_config: payload.yolo_config || null,\n    phases: payload.phases || []\n  }\n};"
+      },
+      "id": "parse-control-message",
+      "name": "Parse Control Message",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "start_planning_only",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "planning_only"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "resume_from_phase",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "resume_phase"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "start_full_workflow",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "full_auto"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "start_yolo_mode",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "yolo"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "mode-switch",
+      "name": "Mode Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        650,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Planning-only mode: Run Gandalf, Radagast, Denethor (analysis only)\n// Then output the plan as JSON without spawning clones\n\nconst hackathonId = $input.item.json.hackathon_id;\n\n// Update Redis state to planning mode\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  await redis.hset(`hackathon:${hackathonId}:state`, 'mode', 'planning_only');\n  await redis.hset(`hackathon:${hackathonId}:state`, 'phase', 'ideation');\n} catch (err) {\n  console.error('Redis error in setup-planning-only:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    hackathon_id: hackathonId,\n    mode: 'planning_only',\n    next_step: 'run_planning_agents'\n  }\n};"
+      },
+      "id": "setup-planning-only",
+      "name": "Setup Planning-Only Mode",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Resume from phase: Skip to the target phase with optional custom plan\n\nconst hackathonId = $input.item.json.hackathon_id;\nconst targetPhase = $input.item.json.target_phase;\nconst useCustomPlan = $input.item.json.use_custom_plan;\nconst customPlan = $input.item.json.custom_plan;\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  // If using custom plan, load it into state\n  if (useCustomPlan && customPlan) {\n    await redis.hset('state:data', 'architecture_plan', JSON.stringify(customPlan.architecture || {}));\n    await redis.hset('state:data', 'phase_allocation', JSON.stringify(customPlan.phase_allocation || {}));\n    await redis.hset('state:data', 'time_tracking', JSON.stringify(customPlan.time_tracking || {}));\n    if (customPlan.idea) {\n      await redis.hset('state:data', 'generated_ideas', JSON.stringify([customPlan.idea]));\n    }\n  }\n\n  await redis.hset(`hackathon:${hackathonId}:state`, 'mode', 'resume_from_phase');\n  await redis.hset(`hackathon:${hackathonId}:state`, 'phase', targetPhase);\n} catch (err) {\n  console.error('Redis error in setup-resume-phase:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    hackathon_id: hackathonId,\n    target_phase: targetPhase,\n    use_custom_plan: useCustomPlan,\n    mode: 'resume_from_phase'\n  }\n};"
+      },
+      "id": "setup-resume-phase",
+      "name": "Setup Resume From Phase",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// YOLO mode: Run entire pipeline without user checkpoints\n// All configuration was pre-collected via questionnaire\n\nconst hackathonId = $input.item.json.hackathon_id;\nconst yoloConfig = $input.item.json.yolo_config;\n\n// Update Redis state with YOLO mode settings\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  // Set YOLO mode flags\n  await redis.hset(`hackathon:${hackathonId}:state`, 'mode', 'yolo');\n  await redis.hset(`hackathon:${hackathonId}:state`, 'auto_approve', 'true');\n  await redis.hset(`hackathon:${hackathonId}:state`, 'checkpoints_enabled', 'false');\n  await redis.hset(`hackathon:${hackathonId}:state`, 'phase', 'ideation');\n\n  // Store YOLO configuration for agents to use\n  if (yoloConfig) {\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.tech_stack.frontend', yoloConfig.frontend || 'react');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.tech_stack.backend', yoloConfig.backend || 'none');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.tech_stack.database', yoloConfig.database || 'none');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.tech_stack.styling', yoloConfig.styling || 'tailwind');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.context.judging_priority', yoloConfig.judging_priority || 'innovation');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.context.time_limit_hours', String(yoloConfig.time_limit_hours || 24));\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.deployment.target', yoloConfig.deployment_target || 'none');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.constraints.preferred_model', yoloConfig.preferred_model || 'auto');\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.integrations.apis', JSON.stringify(yoloConfig.apis_to_integrate || []));\n    await redis.hset(`hackathon:${hackathonId}:state`, 'yolo.integrations.libraries', JSON.stringify(yoloConfig.required_libraries || []));\n  }\n} catch (err) {\n  console.error('Redis error in setup-yolo-mode:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    hackathon_id: hackathonId,\n    mode: 'yolo',\n    auto_approve: true,\n    yolo_config: yoloConfig,\n    next_step: 'run_planning_agents_auto'\n  }\n};"
+      },
+      "id": "setup-yolo-mode",
+      "name": "Setup YOLO Mode",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.target_phase }}",
+                    "rightValue": "backend",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "backend"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.target_phase }}",
+                    "rightValue": "frontend",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "frontend"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.target_phase }}",
+                    "rightValue": "integration",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "integration"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.target_phase }}",
+                    "rightValue": "testing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "testing"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.target_phase }}",
+                    "rightValue": "deployment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "deployment"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "phase-router",
+      "name": "Phase Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status: 'full_workflow_started', hackathon_id: $json.hackathon_id}) }}"
+      },
+      "id": "respond-full-workflow",
+      "name": "Respond - Full Workflow Started",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Output plan JSON after Denethor analysis (planning-only mode)\n// This sends the complete plan back to Discord as JSON attachment\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\nlet planJson;\ntry {\n  // Collect all planning data\n  const ideas = JSON.parse(await redis.hget('state:data', 'generated_ideas') || '[]');\n  const architecture = JSON.parse(await redis.hget('state:data', 'architecture_plan') || '{}');\n  const phaseAllocation = JSON.parse(await redis.hget('state:data', 'phase_allocation') || '{}');\n  const timeTracking = JSON.parse(await redis.hget('state:data', 'time_tracking') || '{}');\n  const metadata = JSON.parse(await redis.hget('state:data', 'hackathon_metadata') || '{}');\n  const platformRec = JSON.parse(await redis.hget('state:data', 'platform_recommendation') || '{}');\n\n  // Get work distribution from Denethor\n  const backendQueue = await redis.zrange('queue:backend', 0, -1);\n  const frontendQueue = await redis.zrange('queue:frontend', 0, -1);\n\n  planJson = {\n    generated_at: new Date().toISOString(),\n    hackathon_metadata: metadata,\n    idea: ideas[0] || {},\n    all_ideas: ideas,\n    platform_recommendation: platformRec,\n    architecture: architecture,\n    phase_allocation: phaseAllocation,\n    time_tracking: timeTracking,\n    work_distribution: {\n      backend_files: backendQueue.map(f => JSON.parse(f)),\n      frontend_files: frontendQueue.map(f => JSON.parse(f))\n    },\n    instructions: 'Modify this plan as needed, then use /upload-plan and /continue-build to resume.'\n  };\n} catch (err) {\n  console.error('Redis error in output-plan-json:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    plan: planJson,\n    plan_json_string: JSON.stringify(planJson, null, 2)\n  }\n};"
+      },
+      "id": "output-plan-json",
+      "name": "Output Plan JSON",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: '📋 **Planning Complete!**\\n\\nHere is your hackathon plan. You can:\\n• Review and modify the plan\\n• Use `/upload-plan` to upload your modified version\\n• Use `/continue-build` to start execution from any phase\\n\\nPlan attached below:', embeds: [{title: $json.plan.idea.title || 'Hackathon Plan', description: 'Architecture: ' + ($json.plan.architecture.tech_stack?.join(', ') || 'See attached JSON'), color: 0x9b59b6, fields: [{name: 'Backend Files', value: String($json.plan.work_distribution.backend_files.length), inline: true}, {name: 'Frontend Files', value: String($json.plan.work_distribution.frontend_files.length), inline: true}, {name: 'Platform', value: $json.plan.platform_recommendation.platform || 'TBD', inline: true}]}]}) }}"
+      },
+      "id": "send-plan-to-discord",
+      "name": "Send Plan to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1650,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status: 'planning_complete', plan: $('Output Plan JSON').item.json.plan}) }}"
+      },
+      "id": "respond-planning-complete",
+      "name": "Respond - Planning Complete",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Initialize hackathon from webhook payload\nconst payload = $input.item.json.body;\n\nconst hackathonId = `hack-${Date.now()}`;\nconst metadata = {\n  hackathon_id: hackathonId,\n  user_id: payload.user_id,\n  hackathon_name: payload.hackathon_name,\n  theme: payload.theme,\n  deadline: payload.deadline,\n  budget_allocated: payload.budget || 100,\n  budget_spent: 0,\n  sponsors: payload.sponsors || [],\n  time_remaining_hours: Math.floor((new Date(payload.deadline) - new Date()) / (1000 * 60 * 60)),\n  phase: 'initialization',\n  created_at: new Date().toISOString()\n};\n\nreturn {\n  json: {\n    hackathon_id: hackathonId,\n    metadata: metadata,\n    state_version: 0\n  }\n};"
+      },
+      "id": "init-metadata",
+      "name": "Initialize Metadata",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const argsData = JSON.stringify(['hackathon_metadata', JSON.stringify($json.metadata), 'phase_progress', JSON.stringify({ideation: 'pending', planning: 'pending', backend: 'pending', frontend: 'pending', integration: 'pending', testing: 'pending', deployment: 'pending', submission: 'pending'}), 'agent_status', JSON.stringify({}), 'file_tracking', JSON.stringify({}), 'checkpoint_states', JSON.stringify({}), 'decision_log', JSON.stringify([]), 'issues_log', JSON.stringify([]), 'token_usage', JSON.stringify({total: 0, by_model: {opus: 0, sonnet: 0, haiku: 0}, by_agent: {}}), 'user_suggestions', JSON.stringify([]), 'submission_status', JSON.stringify({saruman_complete: false, sauron_complete: false, devpost_draft: null, readme_draft: null, video_script: null})]);\n  const pairs = JSON.parse(argsData);\n  // HMSET expects key, field1, value1, field2, value2...\n  await redis.hmset('state:data', ...pairs);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "write-redis-state",
+      "name": "Write Initial State to Redis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis SET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  await redis.set('state:version', '0');\n  return { json: { success: true, operation: 'SET', key: 'state:version' } };\n} catch (err) {\n  console.error('Redis SET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "init-version",
+      "name": "Initialize State Version",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        650,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Pippin system prompt (inlined)\nconst systemPrompt = 'You are Pippin, the Discord concierge. Format hackathon updates as friendly Discord messages with emojis. Always respond with JSON: { discord_message: \"your message\" }';\n\nconst metadata = $('Initialize Metadata').item.json.metadata;\n\nreturn {\n  json: {\n    systemPrompt: systemPrompt,\n    input: {\n      event_type: 'hackathon_start',\n      hackathon_metadata: metadata,\n      message: `🎯 New hackathon started!\\n\\n📋 Details:\\n├─ Theme: ${metadata.theme}\\n├─ Deadline: ${new Date(metadata.deadline).toLocaleString()}\\n├─ Time Available: ${metadata.time_remaining_hours} hours\\n└─ Budget: $${metadata.budget_allocated}\\n\\n⏳ Initializing pipeline...`\n    }\n  }\n};"
+      },
+      "id": "prepare-pippin-start",
+      "name": "Prepare Pippin Start Message",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-sonnet-4-20250514', max_tokens: 2048, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "pippin-discord-start",
+      "name": "Pippin - Discord Start Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Pippin's response with progressive JSON repair\nconst response = $input.item.json.content[0].text;\n\nfunction parseJSON(output) {\n  try { return JSON.parse(output); } catch (e1) {}\n  const jsonBlock = output.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (jsonBlock) { try { return JSON.parse(jsonBlock[1].trim()); } catch (e2) {} }\n  const jsonMatch = output.match(/(\\{[\\s\\S]*\\})/);\n  if (jsonMatch) { try { return JSON.parse(jsonMatch[1].replace(/,\\s*([}\\]])/g, '$1')); } catch (e3) {} }\n  return { discord_message: 'Hackathon pipeline started!' };\n}\n\nconst result = parseJSON(response);\n\nreturn {\n  json: {\n    webhookUrl: $env.DISCORD_WEBHOOK_URL,\n    content: result.discord_message || 'Hackathon pipeline started!'\n  }\n};"
+      },
+      "id": "parse-pippin-response",
+      "name": "Parse Pippin Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhookUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({content: $json.content}) }}"
+      },
+      "id": "send-discord",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Gandalf ideation prompt (inlined)\nconst systemPrompt = 'You are Gandalf, the wise ideation wizard. Generate EXACTLY 3 hackathon ideas. For each idea provide: title, tagline, description, core_features (array of 4), scores (novelty 0-10, feasibility 0-10, wow_factor 0-10), and estimated_completion. Also include platform_recommendation and next_checkpoint. Respond ONLY with valid JSON, no markdown.';\n\nconst metadata = $('Initialize Metadata').item.json.metadata;\n\n// Read user preferences from PostgreSQL if available\nconst preferences = {}; // Would be loaded from DB in real implementation\n\nreturn {\n  json: {\n    agent: 'gandalf',\n    systemPrompt: systemPrompt,\n    input: {\n      hackathon_name: metadata.hackathon_name,\n      theme: metadata.theme,\n      deadline: metadata.deadline,\n      time_remaining_hours: metadata.time_remaining_hours,\n      sponsors: metadata.sponsors,\n      user_preferences: preferences\n    }\n  }\n};"
+      },
+      "id": "prepare-gandalf",
+      "name": "Prepare Gandalf Ideation",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-opus-4-20250514', max_tokens: 16000, thinking: {type: 'enabled', budget_tokens: 10000}, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "gandalf-ideation",
+      "name": "Gandalf - Ideation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Gandalf response with validation and repair\nconst response = $input.item.json.content.find(c => c.type === 'text')?.text;\n\n// JSON Validation with progressive repair\nasync function parseWithRetry(output) {\n  // Strategy 1: Direct parse\n  try {\n    return JSON.parse(output);\n  } catch (e1) {\n    console.log('Direct parse failed, trying markdown extraction...');\n  }\n\n  // Strategy 2: Extract from markdown code blocks\n  const jsonBlockMatch = output.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (jsonBlockMatch) {\n    try {\n      return JSON.parse(jsonBlockMatch[1].trim());\n    } catch (e2) {\n      console.log('Markdown extraction failed, trying cleanup...');\n    }\n  }\n\n  // Strategy 3: Find raw JSON object\n  const jsonMatch = output.match(/(\\{[\\s\\S]*\\}|\\[[\\s\\S]*\\])/);\n  if (jsonMatch) {\n    let cleaned = jsonMatch[1];\n    // Remove trailing commas\n    cleaned = cleaned.replace(/,\\s*([}\\]])/g, '$1');\n    // Remove comments\n    cleaned = cleaned.replace(/\\/\\/.*$/gm, '');\n    try {\n      return JSON.parse(cleaned);\n    } catch (e3) {\n      console.log('Cleaned parse failed');\n    }\n  }\n\n  // If all strategies fail, throw with raw output for circuit breaker\n  const error = new Error('JSON parsing failed after all strategies');\n  error.rawOutput = output.substring(0, 2000);\n  throw error;\n}\n\nlet result;\ntry {\n  result = await parseWithRetry(response);\n} catch (parseError) {\n  // Emit to Redis for circuit breaker tracking\n  const Redis = require('ioredis');\n  const redis = new Redis({host: '127.0.0.1', port: 6379});\n  await redis.publish('circuit:failure', JSON.stringify({\n    agent: 'Gandalf',\n    error: parseError.message,\n    rawOutput: parseError.rawOutput,\n    timestamp: Date.now()\n  }));\n  await redis.quit();\n  throw parseError;\n}\n\nconst hackathonId = $('Initialize Metadata').item.json.hackathon_id;\n\nreturn {\n  json: {\n    hackathon_id: hackathonId,\n    ideas: result.ideas,\n    recommended_idea_index: result.recommended_idea_index,\n    platform_recommendation: result.platform_recommendation,\n    checkpoint_data: result.next_checkpoint,\n    _validation: 'passed'\n  }\n};"
+      },
+      "id": "parse-gandalf",
+      "name": "Parse Gandalf Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const argsData = JSON.stringify(['generated_ideas', JSON.stringify($json.ideas), 'platform_recommendation', JSON.stringify($json.platform_recommendation)]);\n  const pairs = JSON.parse(argsData);\n  // HMSET expects key, field1, value1, field2, value2...\n  await redis.hmset('state:data', ...pairs);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "save-ideas-redis",
+      "name": "Save Ideas to Redis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({from: 'Gandalf', to: 'Pippin', type: 'checkpoint_required', checkpoint_name: 'idea_approval', payload: $json}) }}"
+      },
+      "id": "trigger-checkpoint-1",
+      "name": "Trigger Checkpoint 1 - Idea Approval",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis PUBLISH node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const message = JSON.stringify($json);\n  await redis.publish('agent:Pippin', message);\n  return { json: { success: true, operation: 'PUBLISH', channel: 'agent:Pippin' } };\n} catch (err) {\n  console.error('Redis PUBLISH error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "publish-checkpoint-1",
+      "name": "Publish to Pippin",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "master-checkpoint-response",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "checkpoint-webhook",
+      "name": "Master Checkpoint Response Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        600
+      ],
+      "webhookId": "checkpoint-callback"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process checkpoint approval\nconst payload = $input.item.json.body;\n\nif (payload.checkpoint_name === 'idea_approval' && payload.approved) {\n  const selectedIdea = payload.selected_idea;\n  \n  return {\n    json: {\n      approved: true,\n      selected_idea: selectedIdea,\n      next_phase: 'architecture'\n    }\n  };\n}\n\nreturn {\n  json: {\n    approved: false,\n    reason: payload.rejection_reason || 'User rejected'\n  }\n};"
+      },
+      "id": "process-checkpoint",
+      "name": "Process Checkpoint Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.approved }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-approval",
+      "name": "Check Approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        650,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Radagast architecture prompt (inlined)\nconst systemPrompt = 'You are Radagast, the architecture wizard. Design a time-aware tech stack for the approved hackathon idea. Provide: backend structure (folders, files), frontend structure, database schema, API endpoints, and time allocation for each phase. Respond ONLY with valid JSON containing architecture_plan, file_structure, time_allocation, and tech_stack.';\n\n// Read approved idea from Redis\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\nlet idea, metadata;\ntry {\n  const stateData = await redis.hget('state:data', 'generated_ideas');\n  const ideas = JSON.parse(stateData || '[]');\n\n  const selectedIdea = $input.item.json.selected_idea;\n  idea = ideas[selectedIdea] || ideas[0] || {};\n\n  metadata = JSON.parse(await redis.hget('state:data', 'hackathon_metadata') || '{}');\n} catch (err) {\n  console.error('Redis error in prepare-radagast:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    agent: 'radagast',\n    systemPrompt: systemPrompt,\n    input: {\n      approved_idea: idea,\n      hackathon_metadata: metadata,\n      time_remaining_hours: metadata.time_remaining_hours || 24,\n      budget_remaining: (metadata.budget_allocated || 100) - (metadata.budget_spent || 0)\n    }\n  }\n};"
+      },
+      "id": "prepare-radagast",
+      "name": "Prepare Radagast Architecture",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-opus-4-20250514', max_tokens: 16000, thinking: {type: 'enabled', budget_tokens: 10000}, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "radagast-architecture",
+      "name": "Radagast - Architecture Planning",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Radagast architecture with validation and repair\nconst response = $input.item.json.content.find(c => c.type === 'text')?.text;\n\n// JSON Validation with progressive repair\nasync function parseWithRetry(output) {\n  // Strategy 1: Direct parse\n  try {\n    return JSON.parse(output);\n  } catch (e1) {\n    console.log('Direct parse failed, trying markdown extraction...');\n  }\n\n  // Strategy 2: Extract from markdown code blocks\n  const jsonBlockMatch = output.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (jsonBlockMatch) {\n    try {\n      return JSON.parse(jsonBlockMatch[1].trim());\n    } catch (e2) {\n      console.log('Markdown extraction failed, trying cleanup...');\n    }\n  }\n\n  // Strategy 3: Find raw JSON object\n  const jsonMatch = output.match(/(\\{[\\s\\S]*\\}|\\[[\\s\\S]*\\])/);\n  if (jsonMatch) {\n    let cleaned = jsonMatch[1];\n    // Remove trailing commas\n    cleaned = cleaned.replace(/,\\s*([}\\]])/g, '$1');\n    // Remove comments\n    cleaned = cleaned.replace(/\\/\\/.*$/gm, '');\n    try {\n      return JSON.parse(cleaned);\n    } catch (e3) {\n      console.log('Cleaned parse failed');\n    }\n  }\n\n  // If all strategies fail, throw with raw output for circuit breaker\n  const error = new Error('JSON parsing failed after all strategies');\n  error.rawOutput = output.substring(0, 2000);\n  throw error;\n}\n\nlet result;\ntry {\n  result = await parseWithRetry(response);\n} catch (parseError) {\n  // Emit to Redis for circuit breaker tracking\n  const Redis = require('ioredis');\n  const redis = new Redis({host: '127.0.0.1', port: 6379});\n  await redis.publish('circuit:failure', JSON.stringify({\n    agent: 'Radagast',\n    error: parseError.message,\n    rawOutput: parseError.rawOutput,\n    timestamp: Date.now()\n  }));\n  await redis.quit();\n  throw parseError;\n}\n\nreturn {\n  json: {\n    architecture: result.architecture,\n    phase_allocation: result.phase_allocation,\n    time_tracking: result.time_tracking,\n    crunch_mode_triggers: result.crunch_mode_triggers,\n    checkpoint_data: result.next_checkpoint,\n    _validation: 'passed'\n  }\n};"
+      },
+      "id": "parse-radagast",
+      "name": "Parse Radagast Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis HMSET node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const argsData = JSON.stringify(['architecture_plan', JSON.stringify($json.architecture), 'phase_allocation', JSON.stringify($json.phase_allocation), 'time_tracking', JSON.stringify($json.time_tracking)]);\n  const pairs = JSON.parse(argsData);\n  // HMSET expects key, field1, value1, field2, value2...\n  await redis.hmset('state:data', ...pairs);\n  return { json: { success: true, operation: 'HMSET', key: 'state:data' } };\n} catch (err) {\n  console.error('Redis HMSET error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "save-architecture-redis",
+      "name": "Save Architecture to Redis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({from: 'Radagast', to: 'Pippin', type: 'checkpoint_required', checkpoint_name: 'architecture_approval', payload: $json}) }}"
+      },
+      "id": "trigger-checkpoint-3",
+      "name": "Trigger Checkpoint 3 - Architecture",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1650,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis PUBLISH node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const message = JSON.stringify($json);\n  await redis.publish('agent:Pippin', message);\n  return { json: { success: true, operation: 'PUBLISH', channel: 'agent:Pippin' } };\n} catch (err) {\n  console.error('Redis PUBLISH error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "publish-checkpoint-3",
+      "name": "Publish Architecture Checkpoint",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Checkpoint registered. Awaiting user approval."
+      },
+      "id": "respond-checkpoint-registered",
+      "name": "Respond - Checkpoint Registered",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "architecture-approved",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "architecture-approval-webhook",
+      "name": "Architecture Approval Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        900
+      ],
+      "webhookId": "architecture-approved"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Denethor work distribution prompt (inlined)\nconst systemPrompt = 'You are Denethor, the wise steward. Distribute work from the architecture plan into backend and frontend queues. Create ordered task lists for Gimli (backend) and Legolas (frontend). Respond ONLY with valid JSON containing queue_backend (array of file tasks), queue_frontend (array of file tasks), and parallel_groups.';\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\nlet architecture, phaseAllocation, timeTracking;\ntry {\n  architecture = JSON.parse(await redis.hget('state:data', 'architecture_plan') || '{}');\n  phaseAllocation = JSON.parse(await redis.hget('state:data', 'phase_allocation') || '{}');\n  timeTracking = JSON.parse(await redis.hget('state:data', 'time_tracking') || '{}');\n} catch (err) {\n  console.error('Redis error in prepare-denethor:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    agent: 'denethor',\n    systemPrompt: systemPrompt,\n    input: {\n      architecture: architecture,\n      phase_allocation: phaseAllocation,\n      time_tracking: timeTracking,\n      available_agents: {\n        backend: ['Gimli'],\n        frontend: ['Legolas']\n      }\n    }\n  }\n};"
+      },
+      "id": "prepare-denethor",
+      "name": "Prepare Denethor Distribution",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "denethor-distribution",
+      "name": "Denethor - Work Distribution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        650,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Denethor output with validation and create work queues\nconst response = $input.item.json.content[0].text;\n\n// JSON Validation with progressive repair\nasync function parseWithRetry(output) {\n  // Strategy 1: Direct parse\n  try {\n    return JSON.parse(output);\n  } catch (e1) {\n    console.log('Direct parse failed, trying markdown extraction...');\n  }\n\n  // Strategy 2: Extract from markdown code blocks\n  const jsonBlockMatch = output.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (jsonBlockMatch) {\n    try {\n      return JSON.parse(jsonBlockMatch[1].trim());\n    } catch (e2) {\n      console.log('Markdown extraction failed, trying cleanup...');\n    }\n  }\n\n  // Strategy 3: Find raw JSON object\n  const jsonMatch = output.match(/(\\{[\\s\\S]*\\}|\\[[\\s\\S]*\\])/);\n  if (jsonMatch) {\n    let cleaned = jsonMatch[1];\n    cleaned = cleaned.replace(/,\\s*([}\\]])/g, '$1');\n    cleaned = cleaned.replace(/\\/\\/.*$/gm, '');\n    try {\n      return JSON.parse(cleaned);\n    } catch (e3) {\n      console.log('Cleaned parse failed');\n    }\n  }\n\n  const error = new Error('JSON parsing failed after all strategies');\n  error.rawOutput = output.substring(0, 2000);\n  throw error;\n}\n\nlet result;\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  result = await parseWithRetry(response);\n} catch (parseError) {\n  await redis.publish('circuit:failure', JSON.stringify({\n    agent: 'Denethor',\n    error: parseError.message,\n    rawOutput: parseError.rawOutput,\n    timestamp: Date.now()\n  }));\n  await redis.quit();\n  throw parseError;\n}\n\n// Create work queues for backend\nfor (const file of result.backend_work_queue) {\n  await redis.zadd('queue:backend', file.priority, JSON.stringify(file));\n}\n\n// Create work queues for frontend\nfor (const file of result.frontend_work_queue) {\n  await redis.zadd('queue:frontend', file.priority, JSON.stringify(file));\n}\n\n// Store clone count\nawait redis.hset('state:data', 'backend_clones', result.backend_clones);\nawait redis.hset('state:data', 'frontend_clones', result.frontend_clones);\n\nawait redis.quit();\n\nreturn {\n  json: {\n    backend_clones: result.backend_clones,\n    frontend_clones: result.frontend_clones,\n    backend_queue_size: result.backend_work_queue.length,\n    frontend_queue_size: result.frontend_work_queue.length,\n    _validation: 'passed'\n  }\n};"
+      },
+      "id": "create-work-queues",
+      "name": "Create Work Queues in Redis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-backend-clones",
+      "name": "Split Backend Clones",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1050,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:5678/webhook/gimli-clone",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({clone_id: $json.clone_number, hackathon_id: $('Initialize Metadata').item.json.hackathon_id || $json.hackathon_id, queue: 'backend'}) }}"
+      },
+      "id": "spawn-gimli-clone",
+      "name": "Spawn Gimli Clone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-frontend-clones",
+      "name": "Split Frontend Clones",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1050,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:5678/webhook/legolas-clone",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({clone_id: $json.clone_number, hackathon_id: $('Initialize Metadata').item.json.hackathon_id || $json.hackathon_id, queue: 'frontend'}) }}"
+      },
+      "id": "spawn-legolas-clone",
+      "name": "Spawn Legolas Clone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Work distribution complete. Clones spawned."
+      },
+      "id": "respond-distribution-complete",
+      "name": "Respond - Distribution Complete",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "submission-trigger",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "submission-trigger-webhook",
+      "name": "Submission Phase Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        1200
+      ],
+      "webhookId": "submission-trigger"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Saruman submission prompt (inlined)\nconst systemPrompt = 'You are Saruman, the submission wizard. Generate compelling hackathon submission materials: devpost description, README, pitch script, and demo walkthrough. Respond ONLY with valid JSON containing devpost_draft, readme_draft, pitch_script, and demo_walkthrough.';\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\nlet metadata, architecture, ideas, deploymentUrl, fileTracking;\ntry {\n  metadata = JSON.parse(await redis.hget('state:data', 'hackathon_metadata') || '{}');\n  architecture = JSON.parse(await redis.hget('state:data', 'architecture_plan') || '{}');\n  ideas = JSON.parse(await redis.hget('state:data', 'generated_ideas') || '[]');\n  deploymentUrl = await redis.hget('state:data', 'deployment_url') || '';\n  fileTracking = JSON.parse(await redis.hget('state:data', 'file_tracking') || '{}');\n} catch (err) {\n  console.error('Redis error in prepare-saruman:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\n// Get selected idea\nconst selectedIdeaIndex = $input.item.json.body?.selected_idea || 0;\nconst selectedIdea = ideas[selectedIdeaIndex] || ideas[0] || {};\n\nreturn {\n  json: {\n    agent: 'saruman',\n    systemPrompt: systemPrompt,\n    input: {\n      hackathon_metadata: metadata,\n      project_idea: selectedIdea,\n      architecture: architecture,\n      deployment_url: deploymentUrl,\n      files_completed: Object.keys(fileTracking).filter(f => fileTracking[f] === 'completed'),\n      generate_options: ['devpost', 'readme', 'pitch_script', 'demo_walkthrough']\n    }\n  }\n};"
+      },
+      "id": "prepare-saruman",
+      "name": "Prepare Saruman Submission",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-opus-4-20250514', max_tokens: 16000, thinking: {type: 'enabled', budget_tokens: 10000}, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "saruman-submission",
+      "name": "Saruman - Submission Materials",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        650,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Saruman output and save submission materials\nconst response = $input.item.json.content.find(c => c.type === 'text')?.text;\nconst result = JSON.parse(response);\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  // Save submission materials to Redis\n  await redis.hset('state:data', 'devpost_draft', JSON.stringify(result.devpost_description || {}));\n  await redis.hset('state:data', 'readme_draft', JSON.stringify(result.readme || {}));\n  await redis.hset('state:data', 'pitch_script', JSON.stringify(result.pitch_script || {}));\n  await redis.hset('state:data', 'demo_walkthrough', JSON.stringify(result.demo_walkthrough || {}));\n\n  // Update submission status\n  const submissionStatus = JSON.parse(await redis.hget('state:data', 'submission_status') || '{}');\n  submissionStatus.saruman_complete = true;\n  submissionStatus.devpost_draft = result.devpost_description;\n  submissionStatus.readme_draft = result.readme;\n  await redis.hset('state:data', 'submission_status', JSON.stringify(submissionStatus));\n} catch (err) {\n  console.error('Redis error in parse-saruman:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    saruman_complete: true,\n    devpost_draft: result.devpost_description,\n    readme: result.readme,\n    pitch_script: result.pitch_script,\n    demo_walkthrough: result.demo_walkthrough,\n    checkpoint_data: result.next_checkpoint\n  }\n};"
+      },
+      "id": "parse-saruman",
+      "name": "Parse Saruman Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Sauron demo script prompt (inlined)\nconst systemPrompt = 'You are Sauron, the demo video scriptwriter. Create a compelling 2-minute demo video script with timestamps, narration, and screen actions. Respond ONLY with valid JSON containing video_script (array of scenes with timestamp, narration, screen_action), total_duration_seconds, and key_moments.';\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\nlet metadata, devpostDraft, demoWalkthrough, deploymentUrl;\ntry {\n  metadata = JSON.parse(await redis.hget('state:data', 'hackathon_metadata') || '{}');\n  devpostDraft = JSON.parse(await redis.hget('state:data', 'devpost_draft') || '{}');\n  demoWalkthrough = JSON.parse(await redis.hget('state:data', 'demo_walkthrough') || '{}');\n  deploymentUrl = await redis.hget('state:data', 'deployment_url') || '';\n} catch (err) {\n  console.error('Redis error in prepare-sauron:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    agent: 'sauron',\n    systemPrompt: systemPrompt,\n    input: {\n      hackathon_metadata: metadata,\n      project_summary: devpostDraft,\n      demo_walkthrough: demoWalkthrough,\n      deployment_url: deploymentUrl,\n      target_duration_seconds: 120,\n      style_preferences: {\n        tone: 'professional yet enthusiastic',\n        pacing: 'dynamic with clear transitions'\n      }\n    }\n  }\n};"
+      },
+      "id": "prepare-sauron",
+      "name": "Prepare Sauron Demo Script",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model: 'claude-opus-4-20250514', max_tokens: 16000, thinking: {type: 'enabled', budget_tokens: 10000}, messages: [{role: 'user', content: $json.systemPrompt + '\\n\\nInput:\\n' + JSON.stringify($json.input)}]}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "sauron-demo",
+      "name": "Sauron - Demo Video Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Sauron output and save video script\nconst response = $input.item.json.content.find(c => c.type === 'text')?.text;\nconst result = JSON.parse(response);\n\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  // Save video script to Redis\n  await redis.hset('state:data', 'video_script', JSON.stringify(result.video_script || {}));\n  await redis.hset('state:data', 'storyboard', JSON.stringify(result.storyboard || []));\n  await redis.hset('state:data', 'thumbnail_concept', JSON.stringify(result.thumbnail_concept || {}));\n\n  // Update submission status\n  const submissionStatus = JSON.parse(await redis.hget('state:data', 'submission_status') || '{}');\n  submissionStatus.sauron_complete = true;\n  submissionStatus.video_script = result.video_script;\n  await redis.hset('state:data', 'submission_status', JSON.stringify(submissionStatus));\n\n  // Update phase progress\n  const phaseProgress = JSON.parse(await redis.hget('state:data', 'phase_progress') || '{}');\n  phaseProgress.submission = 'completed';\n  await redis.hset('state:data', 'phase_progress', JSON.stringify(phaseProgress));\n} catch (err) {\n  console.error('Redis error in parse-sauron:', err.message);\n  throw new Error(`Redis operation failed: ${err.message}`);\n} finally {\n  await redis.quit();\n}\n\nreturn {\n  json: {\n    sauron_complete: true,\n    video_script: result.video_script,\n    storyboard: result.storyboard,\n    thumbnail_concept: result.thumbnail_concept,\n    recording_checklist: result.recording_checklist,\n    music_recommendations: result.music_recommendations\n  }\n};"
+      },
+      "id": "parse-sauron",
+      "name": "Parse Sauron Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({from: 'Sauron', to: 'Pippin', type: 'checkpoint_required', checkpoint_name: 'submission_review', payload: {saruman_output: $('Parse Saruman Output').item.json, sauron_output: $json}}) }}"
+      },
+      "id": "trigger-submission-checkpoint",
+      "name": "Trigger Submission Review Checkpoint",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1650,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Converted from Redis PUBLISH node\nconst Redis = require('ioredis');\nconst redis = new Redis({host: '127.0.0.1', port: 6379});\n\ntry {\n  const message = JSON.stringify($json);\n  await redis.publish('agent:Pippin', message);\n  return { json: { success: true, operation: 'PUBLISH', channel: 'agent:Pippin' } };\n} catch (err) {\n  console.error('Redis PUBLISH error:', err.message);\n  throw err;\n} finally {\n  await redis.quit();\n}"
+      },
+      "id": "publish-submission-checkpoint",
+      "name": "Publish Submission Checkpoint",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status: 'submission_complete', saruman: $('Parse Saruman Output').item.json, sauron: $('Parse Sauron Output').item.json}) }}"
+      },
+      "id": "respond-submission-complete",
+      "name": "Respond - Submission Complete",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        1200
+      ]
+    }
+  ],
+  "connections": {
+    "Control Message Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Control Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Control Message": {
+      "main": [
+        [
+          {
+            "node": "Mode Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Switch": {
+      "main": [
+        [
+          {
+            "node": "Setup Planning-Only Mode",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Setup Resume From Phase",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Full Workflow Started",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Setup YOLO Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup YOLO Mode": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gandalf Ideation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Planning-Only Mode": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gandalf Ideation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Resume From Phase": {
+      "main": [
+        [
+          {
+            "node": "Phase Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Phase Router": {
+      "main": [
+        [
+          {
+            "node": "Split Backend Clones",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split Frontend Clones",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Saruman Submission",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Saruman Submission",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Saruman Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Plan JSON": {
+      "main": [
+        [
+          {
+            "node": "Send Plan to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Plan to Discord": {
+      "main": [
+        [
+          {
+            "node": "Respond - Planning Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Metadata": {
+      "main": [
+        [
+          {
+            "node": "Write Initial State to Redis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Initialize State Version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Initial State to Redis": {
+      "main": [
+        [
+          {
+            "node": "Prepare Pippin Start Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Pippin Start Message": {
+      "main": [
+        [
+          {
+            "node": "Pippin - Discord Start Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pippin - Discord Start Notification": {
+      "main": [
+        [
+          {
+            "node": "Parse Pippin Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Pippin Response": {
+      "main": [
+        [
+          {
+            "node": "Send to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Discord": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gandalf Ideation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Gandalf Ideation": {
+      "main": [
+        [
+          {
+            "node": "Gandalf - Ideation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gandalf - Ideation": {
+      "main": [
+        [
+          {
+            "node": "Parse Gandalf Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gandalf Output": {
+      "main": [
+        [
+          {
+            "node": "Save Ideas to Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Ideas to Redis": {
+      "main": [
+        [
+          {
+            "node": "Trigger Checkpoint 1 - Idea Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Checkpoint 1 - Idea Approval": {
+      "main": [
+        [
+          {
+            "node": "Publish to Pippin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checkpoint Response Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process Checkpoint Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Checkpoint Response": {
+      "main": [
+        [
+          {
+            "node": "Check Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval": {
+      "main": [
+        [
+          {
+            "node": "Prepare Radagast Architecture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Radagast Architecture": {
+      "main": [
+        [
+          {
+            "node": "Radagast - Architecture Planning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Radagast - Architecture Planning": {
+      "main": [
+        [
+          {
+            "node": "Parse Radagast Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Radagast Output": {
+      "main": [
+        [
+          {
+            "node": "Save Architecture to Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Architecture to Redis": {
+      "main": [
+        [
+          {
+            "node": "Trigger Checkpoint 3 - Architecture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Checkpoint 3 - Architecture": {
+      "main": [
+        [
+          {
+            "node": "Publish Architecture Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Architecture Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Respond - Checkpoint Registered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Architecture Approval Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Denethor Distribution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Denethor Distribution": {
+      "main": [
+        [
+          {
+            "node": "Denethor - Work Distribution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Denethor - Work Distribution": {
+      "main": [
+        [
+          {
+            "node": "Create Work Queues in Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Work Queues in Redis": {
+      "main": [
+        [
+          {
+            "node": "Split Backend Clones",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Frontend Clones",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Output Plan JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Backend Clones": {
+      "main": [
+        [
+          {
+            "node": "Spawn Gimli Clone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spawn Gimli Clone": {
+      "main": [
+        [
+          {
+            "node": "Split Backend Clones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Frontend Clones": {
+      "main": [
+        [
+          {
+            "node": "Spawn Legolas Clone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spawn Legolas Clone": {
+      "main": [
+        [
+          {
+            "node": "Split Frontend Clones",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond - Distribution Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submission Phase Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Saruman Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Saruman Submission": {
+      "main": [
+        [
+          {
+            "node": "Saruman - Submission Materials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Saruman - Submission Materials": {
+      "main": [
+        [
+          {
+            "node": "Parse Saruman Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Saruman Output": {
+      "main": [
+        [
+          {
+            "node": "Prepare Sauron Demo Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sauron Demo Script": {
+      "main": [
+        [
+          {
+            "node": "Sauron - Demo Video Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sauron - Demo Video Script": {
+      "main": [
+        [
+          {
+            "node": "Parse Sauron Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Sauron Output": {
+      "main": [
+        [
+          {
+            "node": "Trigger Submission Review Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Submission Review Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Publish Submission Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Submission Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Respond - Submission Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-12-14T00:00:00.000Z",
+  "versionId": "1"
+}

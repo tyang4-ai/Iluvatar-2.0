@@ -1,0 +1,56 @@
+{
+  "name": "iluvatar-orchestrator",
+  "version": "3.0.0",
+  "description": "ILUVATAR 3.0 - Multi-tenant hackathon orchestration service",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "mocha 'tests/**/*.test.js'"
+  },
+  "keywords": [
+    "hackathon",
+    "automation",
+    "orchestration",
+    "ai",
+    "docker"
+  ],
+  "author": "ILUVATAR Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "@anthropic-ai/sdk": "^0.12.0",
+    "openai": "^4.24.1",
+    "discord.js": "^14.14.1",
+    "dockerode": "^4.0.2",
+    "@octokit/rest": "^20.0.2",
+    "aws-sdk": "^2.1520.0",
+    "pg": "^8.11.3",
+    "redis": "^4.6.12",
+    "ioredis": "^5.3.2",
+    "pdf-parse": "^1.1.1",
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^4.7.1",
+    "archiver": "^6.0.1",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1",
+    "joi": "^17.11.0",
+    "axios": "^1.6.5",
+    "p-queue": "^8.0.1",
+    "eventemitter3": "^5.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "mocha": "^10.2.0",
+    "chai": "^4.3.10",
+    "sinon": "^17.0.1",
+    "eslint": "^8.56.0"
+  }
+}

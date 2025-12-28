@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": {
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_USER": "iluvatar_readonly",
+        "POSTGRES_PASSWORD": "${POSTGRES_READONLY_PASSWORD}",
+        "POSTGRES_DATABASE": "iluvatar"
+      }
+    }
+  }
+}

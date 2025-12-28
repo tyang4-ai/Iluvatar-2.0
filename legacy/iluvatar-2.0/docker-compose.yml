@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  # n8n - Workflow orchestration engine
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: iluvatar_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=iluvatar
+      - POSTGRES_USER=iluvatar
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/workflows
+      - ./agents:/agents
+      - ./core:/core
+    depends_on:
+      - redis
+      - postgres
+      - vault
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+  # Redis - State management and message bus
+  redis:
+    image: redis:7-alpine
+    container_name: iluvatar_redis
+    command: redis-server /etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./setup/redis.conf:/etc/redis/redis.conf
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+  # PostgreSQL - Long-term storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: iluvatar_postgres
+    environment:
+      - POSTGRES_DB=iluvatar
+      - POSTGRES_USER=iluvatar
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./setup/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+  # Qdrant - Vector database for semantic search
+  vectordb:
+    image: qdrant/qdrant:latest
+    container_name: iluvatar_vectordb
+    ports:
+      - "6333:6333"
+    volumes:
+      - vectordb_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+  # HashiCorp Vault - Secrets management
+  vault:
+    image: hashicorp/vault:latest
+    container_name: iluvatar_vault
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_ADDR=http://0.0.0.0:8200
+      - VAULT_API_ADDR=http://0.0.0.0:8200
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_ROOT_TOKEN}
+    volumes:
+      - vault_data:/vault/file
+      - vault_logs:/vault/logs
+      - ./setup/vault-config.hcl:/vault/config/vault-config.hcl
+    cap_add:
+      - IPC_LOCK
+    command: server
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+  # Grafana - Monitoring dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: iluvatar_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_INSTALL_PLUGINS=redis-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./setup/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/iluvatar.json
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+
+# Named volumes for persistent data
+volumes:
+  n8n_data:
+    driver: local
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  vectordb_data:
+    driver: local
+  vault_data:
+    driver: local
+  vault_logs:
+    driver: local
+  grafana_data:
+    driver: local
+
+# Network for inter-container communication
+networks:
+  iluvatar_network:
+    driver: bridge

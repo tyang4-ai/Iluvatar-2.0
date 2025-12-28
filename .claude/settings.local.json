@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(curl:*)",
+      "Bash(node:*)",
+      "Bash(grep:*)",
+      "Bash(aws ec2 wait:*)",
+      "Bash(aws ec2 modify-instance-attribute:*)",
+      "Bash(aws ec2 start-instances:*)",
+      "Bash(cat:*)"
+    ]
+  }
+}

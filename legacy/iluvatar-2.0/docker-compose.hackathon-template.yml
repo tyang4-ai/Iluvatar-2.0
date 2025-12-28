@@ -1,0 +1,183 @@
+# =============================================================================
+# ILUVATAR 3.0 - Hackathon Container Template
+# =============================================================================
+# Template for per-hackathon containers spawned by the orchestrator.
+# Each hackathon gets isolated n8n instance, workspace, and resources.
+#
+# This file is used as a template by the ContainerPool class.
+# Variables like ${HACKATHON_ID} are replaced at runtime.
+#
+# Usage (via orchestrator API, not directly):
+#   POST /api/hackathons/new
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # =========================================================================
+  # n8n - Workflow engine for this hackathon
+  # =========================================================================
+  n8n_${HACKATHON_ID}:
+    image: n8nio/n8n:latest
+    container_name: iluvatar_n8n_${HACKATHON_ID}
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # n8n config
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+
+      # External URLs
+      - N8N_HOST=n8n-${HACKATHON_ID}.${BASE_DOMAIN:-localhost}
+      - WEBHOOK_URL=https://n8n-${HACKATHON_ID}.${BASE_DOMAIN:-localhost}/
+
+      # Database (SQLite per hackathon for isolation)
+      - DB_TYPE=sqlite
+      - DB_SQLITE_DATABASE=/data/database.sqlite
+
+      # Hackathon context
+      - HACKATHON_ID=${HACKATHON_ID}
+      - HACKATHON_NAME=${HACKATHON_NAME}
+      - HACKATHON_DEADLINE=${HACKATHON_DEADLINE}
+      - HACKATHON_BUDGET=${HACKATHON_BUDGET}
+
+      # AI Keys (from orchestrator)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+
+      # Redis connection (shared)
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+
+      # GitHub (per-hackathon token if provided)
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO:-}
+
+      # Deployment tokens
+      - VERCEL_TOKEN=${VERCEL_TOKEN:-}
+      - RAILWAY_TOKEN=${RAILWAY_TOKEN:-}
+
+      # Orchestrator callback URL
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://orchestrator:3001}
+      - ORCHESTRATOR_CALLBACK_SECRET=${CALLBACK_SECRET}
+    volumes:
+      # n8n data (per-hackathon)
+      - n8n_data_${HACKATHON_ID}:/data
+
+      # Workflows (shared, read-only)
+      - ${WORKFLOWS_PATH:-./n8n-workflows}:/workflows:ro
+
+      # Agent prompts (shared, read-only)
+      - ${AGENTS_PATH:-./agents}:/agents:ro
+
+      # Core modules (shared, read-only)
+      - ${CORE_PATH:-./core}:/core:ro
+
+      # Hackathon workspace (writable, per-hackathon)
+      - workspace_${HACKATHON_ID}:/workspace
+    labels:
+      - "iluvatar.hackathon.id=${HACKATHON_ID}"
+      - "iluvatar.hackathon.name=${HACKATHON_NAME}"
+      - "iluvatar.hackathon.deadline=${HACKATHON_DEADLINE}"
+      - "iluvatar.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n-${HACKATHON_ID}.rule=Host(`n8n-${HACKATHON_ID}.${BASE_DOMAIN:-localhost}`)"
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+    deploy:
+      resources:
+        limits:
+          cpus: '${CPU_LIMIT:-2}'
+          memory: ${MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${CPU_RESERVE:-0.5}'
+          memory: ${MEMORY_RESERVE:-1G}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # =========================================================================
+  # Code Server - Optional browser IDE for hackathon
+  # =========================================================================
+  codeserver_${HACKATHON_ID}:
+    image: codercom/code-server:latest
+    container_name: iluvatar_codeserver_${HACKATHON_ID}
+    profiles:
+      - ide  # Only start if IDE profile is enabled
+    ports:
+      - "${CODESERVER_PORT:-8080}:8080"
+    environment:
+      - PASSWORD=${CODESERVER_PASSWORD:-hackathon}
+    volumes:
+      - workspace_${HACKATHON_ID}:/home/coder/project
+    labels:
+      - "iluvatar.hackathon.id=${HACKATHON_ID}"
+      - "iluvatar.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.code-${HACKATHON_ID}.rule=Host(`code-${HACKATHON_ID}.${BASE_DOMAIN:-localhost}`)"
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # =========================================================================
+  # Dev Server - For running the hackathon project locally
+  # =========================================================================
+  devserver_${HACKATHON_ID}:
+    image: node:20-alpine
+    container_name: iluvatar_devserver_${HACKATHON_ID}
+    profiles:
+      - dev  # Only start if dev profile is enabled
+    ports:
+      - "${DEV_PORT:-3000}:3000"
+    working_dir: /app
+    command: sh -c "if [ -f package.json ]; then npm install && npm run dev; else sleep infinity; fi"
+    volumes:
+      - workspace_${HACKATHON_ID}:/app
+    labels:
+      - "iluvatar.hackathon.id=${HACKATHON_ID}"
+      - "iluvatar.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.dev-${HACKATHON_ID}.rule=Host(`dev-${HACKATHON_ID}.${BASE_DOMAIN:-localhost}`)"
+    restart: unless-stopped
+    networks:
+      - iluvatar_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+# =============================================================================
+# Volumes (created per-hackathon)
+# =============================================================================
+volumes:
+  n8n_data_${HACKATHON_ID}:
+    driver: local
+    labels:
+      - "iluvatar.hackathon.id=${HACKATHON_ID}"
+      - "iluvatar.managed=true"
+
+  workspace_${HACKATHON_ID}:
+    driver: local
+    labels:
+      - "iluvatar.hackathon.id=${HACKATHON_ID}"
+      - "iluvatar.managed=true"
+
+# =============================================================================
+# Network (connects to orchestrator network)
+# =============================================================================
+networks:
+  iluvatar_network:
+    external: true
+    name: iluvatar-2.0_iluvatar_network

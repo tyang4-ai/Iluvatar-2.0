@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.local
+*.env
+
+# Credentials & Keys (NEVER commit these)
+*.csv
+*.ppk
+*.pem
+*credentials*
+*_accessKeys*
+*rootkey*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model checkpoints (too large for git)
+models/*.bin
+models/*.safetensors
+models/*.gguf
+*.ckpt
+
+# Data (may be too large)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Wandb
+wandb/
