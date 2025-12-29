@@ -1,3 +1,5 @@
+> **Tip:** View this file with proper formatting at [markdownlivepreview.com](https://markdownlivepreview.com/)
+
 # ILUVATAR - Novel Writer ML Project
 
 > *Named after Tolkien's creator god* - An automated novel creation pipeline that learns your writing style through ML fine-tuning.

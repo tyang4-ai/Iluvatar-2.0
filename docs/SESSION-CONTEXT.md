@@ -28,8 +28,8 @@
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| Phase 0: Repository Setup | IN PROGRESS | Cleaning up, reorganizing |
-| Phase A: Infrastructure | NOT STARTED | Discord + N8N |
+| Phase 0: Repository Setup | COMPLETED | Cleaned up, reorganized, pushed to GitHub |
+| Phase A: Infrastructure | NEXT | Discord + N8N |
 | Phase B: Baseline Writer | NOT STARTED | 3-agent Claude pipeline |
 | Phase C: Data Pipeline | NOT STARTED | Preference collection |
 | Phase D: First Fine-tune | NOT STARTED | LoRA on Qwen2.5 |
@@ -144,10 +144,18 @@ Novel contributions being explored:
 
 ## Next Steps
 
-1. Complete Phase 0: Push cleaned repo to GitHub
-2. Begin Phase A: Copy core modules from legacy, set up Discord bot
-3. Create the 3 agent prompts (planning, critic, writing)
-4. Build first baseline writer using Claude Opus
+1. ✅ Phase 0 Complete: Repository cleaned and pushed to GitHub
+2. **Phase A (Current)**: Infrastructure setup
+   - ✅ A.1: Copy and modify state-manager.js with scoped state (global + per-novel)
+   - ⬜ A.2: Copy message-bus.js and json-validator.js
+   - ⬜ A.3: Create model-config.js (3 agent tiers)
+   - ⬜ A.4: Create novel-manager.js (novel lifecycle)
+   - ⬜ A.5: Create s3-storage.js (backup/restore)
+   - ⬜ A.6: Create discord-bot.js (4 slash commands)
+   - ⬜ A.7: Write 3 agent prompts
+   - ⬜ A.8: Create N8N workflow
+3. Phase B: Create the 3 agent prompts and baseline writer
+4. Phase C: Data pipeline for preference collection
 
 ---
 
@@ -161,6 +169,21 @@ Novel contributions being explored:
 
 **Full plan:**
 - `.claude/plans/inherited-chasing-moon.md` - Complete implementation plan
+
+---
+
+## Concepts Already Explained
+
+Track concepts explained during pair programming sessions to avoid repetition.
+
+| Concept | Explanation |
+|---------|-------------|
+| **API (Application Programming Interface)** | The "contract" or "menu" that defines what methods/functions are available to call. Like a restaurant menu - lists what you can order (methods) and what you get back (return values). |
+| **StateManager** | A class that wraps Redis operations with optimistic locking rules. Instead of calling Redis directly, agents call StateManager methods which handle version checking and conflict resolution. |
+| **Scope** | "Which bucket of data" - either `"global"` for shared config (style guides, training settings) or `"novel:{id}"` for per-novel isolated state. Prevents conflicts between novels. |
+| **Optimistic Locking** | WATCH/MULTI/EXEC pattern: read data + version, do work, attempt write with expected version. If version changed (another agent wrote), transaction fails and must retry. |
+| **Redis Data Structures** | Hash (`hset`/`hget`) for key-value pairs, Sorted Sets (`zadd`/`zrevrange`) for ordered data with scores, String keys for version numbers. |
+| **Exponential Backoff** | Retry delays that double each attempt (100ms → 200ms → 400ms). Prevents thundering herd problem when multiple agents retry simultaneously. |
 
 ---
 
