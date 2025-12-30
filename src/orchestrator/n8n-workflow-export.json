@@ -1,0 +1,397 @@
+{
+  "name": "ILUVATAR Novel Writer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "iluvatar-trigger",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-entry",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "value2": "outline"
+            }
+          ]
+        }
+      },
+      "id": "if-action-outline",
+      "name": "IF Outline",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "value2": "write"
+            }
+          ]
+        }
+      },
+      "id": "if-action-write",
+      "name": "IF Write",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Gandalf prompt\nconst metadata = $input.first().json.metadata;\n\nconst prompt = `Create a novel outline with the following specifications:\n\nTitle: ${metadata.title}\nGenre: ${metadata.genre}\nPremise: ${metadata.premise || 'No specific premise provided'}\nLanguage: ${metadata.language}\nTarget Chapters: ${metadata.targetChapters}\nWords Per Chapter: ${metadata.targetWordsPerChapter}\n\nPlease create a complete outline following the format specified in your instructions.`;\n\nreturn { json: { prompt, metadata } };"
+      },
+      "id": "build-gandalf-prompt",
+      "name": "Build Gandalf Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": "8192"
+            },
+            {
+              "name": "system",
+              "value": "={{ $env.GANDALF_PROMPT }}"
+            },
+            {
+              "name": "messages",
+              "value": "=[{\"role\": \"user\", \"content\": \"{{ $json.prompt }}\"}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "call-gandalf",
+      "name": "Call Gandalf (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gandalf's text output into structured sections\nconst output = $input.first().json.content[0].text;\nconst metadata = $input.first().json.metadata || {};\n\nconst sections = {};\nconst markers = ['TITLE', 'SYNOPSIS', 'CHAPTERS', 'CHARACTERS', 'WORLDBUILDING', 'THEMES', 'NOTES'];\n\nfor (const marker of markers) {\n  const regex = new RegExp(`## ${marker}\\\\n([\\\\s\\\\S]*?)(?=## |$)`, 'i');\n  const match = output.match(regex);\n  if (match) {\n    sections[marker.toLowerCase()] = match[1].trim();\n  }\n}\n\nreturn { \n  json: { \n    ...sections, \n    raw: output,\n    novelId: metadata.novelId || $input.first().json.novelId,\n    type: 'outline'\n  } \n};"
+      },
+      "id": "parse-gandalf-output",
+      "name": "Parse Gandalf Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Frodo prompt for writing\nconst input = $input.first().json;\nconst metadata = input.metadata;\nconst outline = input.outline;\nconst chapterNum = input.chapterNum || 1;\n\nconst prompt = `Write chapter ${chapterNum} based on the following:\n\nNovel Outline:\n${outline.raw || JSON.stringify(outline)}\n\nChapter to write: ${chapterNum}\nTarget word count: ${metadata.targetWordsPerChapter}\nLanguage: ${metadata.language}\n\nPlease write the complete chapter following the format specified in your instructions.`;\n\nreturn { json: { prompt, metadata, chapterNum } };"
+      },
+      "id": "build-frodo-prompt",
+      "name": "Build Frodo Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": "8192"
+            },
+            {
+              "name": "system",
+              "value": "={{ $env.FRODO_PROMPT }}"
+            },
+            {
+              "name": "messages",
+              "value": "=[{\"role\": \"user\", \"content\": \"{{ $json.prompt }}\"}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "call-frodo",
+      "name": "Call Frodo (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Frodo's chapter output\nconst output = $input.first().json.content[0].text;\nconst metadata = $input.first().json.metadata || {};\n\nconst sections = {};\nconst markers = ['CHAPTER TITLE', 'CONTENT', 'WORD COUNT', 'AUTHOR NOTES'];\n\nfor (const marker of markers) {\n  const regex = new RegExp(`## ${marker}\\\\n([\\\\s\\\\S]*?)(?=## |$)`, 'i');\n  const match = output.match(regex);\n  if (match) {\n    const key = marker.toLowerCase().replace(' ', '_');\n    sections[key] = match[1].trim();\n  }\n}\n\nreturn { \n  json: { \n    title: sections['chapter_title'],\n    content: sections['content'],\n    wordCount: parseInt(sections['word_count']) || 0,\n    notes: sections['author_notes'],\n    raw: output,\n    novelId: metadata.novelId || $input.first().json.novelId,\n    chapterNum: $input.first().json.chapterNum,\n    type: 'chapter'\n  } \n};"
+      },
+      "id": "parse-frodo-output",
+      "name": "Parse Frodo Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Elrond prompt for critique\nconst input = $input.first().json;\n\nconst prompt = `Evaluate this chapter:\n\nChapter ${input.chapterNum}: ${input.title}\n\n${input.content}\n\nWord count: ${input.wordCount}\n\nPlease provide your critique following the format specified in your instructions.`;\n\nreturn { json: { prompt, ...input } };"
+      },
+      "id": "build-elrond-prompt",
+      "name": "Build Elrond Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": "4096"
+            },
+            {
+              "name": "system",
+              "value": "={{ $env.ELROND_PROMPT }}"
+            },
+            {
+              "name": "messages",
+              "value": "=[{\"role\": \"user\", \"content\": \"{{ $json.prompt }}\"}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "call-elrond",
+      "name": "Call Elrond (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Elrond's critique output\nconst output = $input.first().json.content[0].text;\n\nconst sections = {};\nconst markers = ['SCORE', 'STRENGTHS', 'WEAKNESSES', 'SUGGESTED REVISION', 'PREFERENCE', 'NOTES'];\n\nfor (const marker of markers) {\n  const regex = new RegExp(`## ${marker}\\\\n([\\\\s\\\\S]*?)(?=## |$)`, 'i');\n  const match = output.match(regex);\n  if (match) {\n    const key = marker.toLowerCase().replace(' ', '_');\n    sections[key] = match[1].trim();\n  }\n}\n\n// Parse score as number\nconst score = parseInt(sections['score']) || 0;\n\nreturn { \n  json: { \n    score,\n    strengths: sections['strengths'],\n    weaknesses: sections['weaknesses'],\n    suggestedRevision: sections['suggested_revision'],\n    preference: sections['preference'],\n    notes: sections['notes'],\n    raw: output,\n    novelId: $input.first().json.novelId,\n    chapterNum: $input.first().json.chapterNum,\n    type: 'critique'\n  } \n};"
+      },
+      "id": "parse-elrond-output",
+      "name": "Parse Elrond Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.score }}",
+              "operation": "smaller",
+              "value2": 70
+            }
+          ]
+        }
+      },
+      "id": "if-needs-revision",
+      "name": "IF Needs Revision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2050, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "IF Outline", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF Outline": {
+      "main": [
+        [
+          { "node": "Build Gandalf Prompt", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "IF Write", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF Write": {
+      "main": [
+        [
+          { "node": "Build Frodo Prompt", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Build Frodo Prompt", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Gandalf Prompt": {
+      "main": [
+        [
+          { "node": "Call Gandalf (Claude)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Gandalf (Claude)": {
+      "main": [
+        [
+          { "node": "Parse Gandalf Output", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Gandalf Output": {
+      "main": [
+        [
+          { "node": "Respond Success", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Frodo Prompt": {
+      "main": [
+        [
+          { "node": "Call Frodo (Claude)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Frodo (Claude)": {
+      "main": [
+        [
+          { "node": "Parse Frodo Output", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Frodo Output": {
+      "main": [
+        [
+          { "node": "Build Elrond Prompt", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Elrond Prompt": {
+      "main": [
+        [
+          { "node": "Call Elrond (Claude)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Elrond (Claude)": {
+      "main": [
+        [
+          { "node": "Parse Elrond Output", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Elrond Output": {
+      "main": [
+        [
+          { "node": "IF Needs Revision", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF Needs Revision": {
+      "main": [
+        [
+          { "node": "Build Frodo Prompt", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Respond Success", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  }
+}

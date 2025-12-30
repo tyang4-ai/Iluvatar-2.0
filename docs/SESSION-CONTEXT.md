@@ -29,8 +29,8 @@
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0: Repository Setup | COMPLETED | Cleaned up, reorganized, pushed to GitHub |
-| Phase A: Infrastructure | NEXT | Discord + N8N |
-| Phase B: Baseline Writer | NOT STARTED | 3-agent Claude pipeline |
+| Phase A: Infrastructure | COMPLETED | Core modules, Discord bot, N8N workflow, agent prompts |
+| Phase B: Integration Testing | NEXT | Deploy and test the pipeline end-to-end |
 | Phase C: Data Pipeline | NOT STARTED | Preference collection |
 | Phase D: First Fine-tune | NOT STARTED | LoRA on Qwen2.5 |
 | Phase E: RLHF Loop | NOT STARTED | DPO training |
@@ -100,14 +100,17 @@ Critic Agent:   Claude Opus (quality evaluation, training signal)
 
 ## Key Decisions
 
-| Decision | Choice |
-|----------|--------|
-| Project Name | ILUVATAR (inherited from legacy) |
-| Orchestration | Discord + N8N |
-| Output Language | Bilingual (Chinese + English) |
-| Base Model | Qwen2.5 (14B → 32B) |
-| Learning Style | Pair programming |
-| API Model | Claude Opus for planning/critic |
+| Decision | Choice | Reasoning |
+|----------|--------|-----------|
+| Project Name | ILUVATAR (inherited from legacy) | |
+| Orchestration | Discord + N8N | |
+| Output Language | Bilingual (Chinese + English) | |
+| Base Model | Qwen2.5 (14B → 32B) | Strong Chinese language support |
+| Learning Style | Pair programming | |
+| API Model | Claude Opus for planning/critic | |
+| Agent Output Format | Plain text with markers (not JSON) | LLMs unreliable at JSON; text with `## SECTION` markers is easier to parse and less error-prone |
+| State Scope | Hybrid: global + per-novel | Global for style guides, per-novel for chapter data; prevents conflicts |
+| Agent Names | Gandalf (planning), Frodo (writing), Elrond (critic) | LOTR-inspired |
 
 ---
 
@@ -145,16 +148,20 @@ Novel contributions being explored:
 ## Next Steps
 
 1. ✅ Phase 0 Complete: Repository cleaned and pushed to GitHub
-2. **Phase A (Current)**: Infrastructure setup
-   - ✅ A.1: Copy and modify state-manager.js with scoped state (global + per-novel)
-   - ⬜ A.2: Copy message-bus.js and json-validator.js
-   - ⬜ A.3: Create model-config.js (3 agent tiers)
-   - ⬜ A.4: Create novel-manager.js (novel lifecycle)
-   - ⬜ A.5: Create s3-storage.js (backup/restore)
-   - ⬜ A.6: Create discord-bot.js (4 slash commands)
-   - ⬜ A.7: Write 3 agent prompts
-   - ⬜ A.8: Create N8N workflow
-3. Phase B: Create the 3 agent prompts and baseline writer
+2. ✅ **Phase A Complete**: Infrastructure setup
+   - ✅ A.1: state-manager.js with scoped state (global + per-novel)
+   - ✅ A.2: message-bus.js (skipped json-validator - using text markers)
+   - ✅ A.3: model-config.js (Gandalf, Frodo, Elrond tiers)
+   - ✅ A.4: novel-manager.js (novel lifecycle, configurable thresholds)
+   - ✅ A.5: s3-storage.js (backup/restore/training data)
+   - ✅ A.6: discord-bot.js (6 slash commands)
+   - ✅ A.7: Agent prompts (gandalf-planning.md, frodo-writing.md, elrond-critic.md)
+   - ✅ A.8: N8N workflow setup docs + export JSON
+3. **Phase B (Next)**: Integration testing
+   - Deploy to EC2
+   - Test Discord bot commands
+   - Test full Gandalf → Frodo → Elrond pipeline
+   - Verify Redis state management
 4. Phase C: Data pipeline for preference collection
 
 ---
@@ -184,6 +191,8 @@ Track concepts explained during pair programming sessions to avoid repetition.
 | **Optimistic Locking** | WATCH/MULTI/EXEC pattern: read data + version, do work, attempt write with expected version. If version changed (another agent wrote), transaction fails and must retry. |
 | **Redis Data Structures** | Hash (`hset`/`hget`) for key-value pairs, Sorted Sets (`zadd`/`zrevrange`) for ordered data with scores, String keys for version numbers. |
 | **Exponential Backoff** | Retry delays that double each attempt (100ms → 200ms → 400ms). Prevents thundering herd problem when multiple agents retry simultaneously. |
+| **Message Bus (Pub/Sub)** | Like a radio station: publishers broadcast on channels, subscribers listen. Agents communicate through the bus without knowing each other directly. Includes inbox backup for reliability when agents are offline. |
+| **Temperature (LLM)** | Controls probability distribution for next-token selection. 0 = always pick highest probability (deterministic). 1 = sample according to actual probabilities (creative). Higher = flatter distribution, more randomness. |
 
 ---
 
