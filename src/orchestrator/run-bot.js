@@ -4,6 +4,9 @@
  * Starts the Discord bot with all dependencies wired up.
  */
 
+// Load environment variables from .env file
+require('dotenv').config();
+
 const { IluvatarBot } = require('./discord-bot');
 const { StateManager } = require('../core/state-manager');
 const { NovelManager } = require('../core/novel-manager');

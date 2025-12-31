@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
     "ioredis": "^5.3.2",
     "@aws-sdk/client-s3": "^3.400.0"
   },
