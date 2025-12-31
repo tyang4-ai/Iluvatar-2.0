@@ -166,6 +166,34 @@ class NovelManager {
   }
 
   /**
+   * Update novel metadata (partial update)
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} updates - Fields to update (merged with existing metadata)
+   * @returns {Promise<Object>} Updated metadata
+   */
+  async updateNovelMetadata(novelId, updates) {
+    const scope = this.getScope(novelId);
+
+    const result = await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      const updatedMetadata = {
+        ...metadata,
+        ...updates,
+        updatedAt: new Date().toISOString()
+      };
+
+      return { metadata: updatedMetadata };
+    });
+
+    return result.metadata;
+  }
+
+  /**
    * Update novel status
    *
    * @param {string} novelId - Novel ID

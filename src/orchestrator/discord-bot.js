@@ -13,7 +13,7 @@
  *   /novel list   - List all novels
  */
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, ChannelType, PermissionFlagsBits } = require('discord.js');
 
 class IluvatarBot {
   /**
@@ -212,12 +212,21 @@ class IluvatarBot {
 
     await interaction.deferReply();
 
+    // Create the novel in our system first
     const novel = await this.novelManager.createNovel({
       title,
       genre,
       premise,
       language
     });
+
+    // Create a dedicated Discord channel for this novel
+    const channel = await this.createNovelChannel(interaction.guild, novel);
+
+    // Update novel metadata with the channel ID
+    if (channel) {
+      await this.novelManager.updateNovelMetadata(novel.id, { channelId: channel.id });
+    }
 
     const embed = new EmbedBuilder()
       .setTitle('📖 Novel Created')
@@ -227,7 +236,8 @@ class IluvatarBot {
         { name: 'Genre', value: novel.genre, inline: true },
         { name: 'Language', value: novel.language, inline: true },
         { name: 'Novel ID', value: `\`${novel.id}\``, inline: false },
-        { name: 'Status', value: novel.status, inline: true }
+        { name: 'Status', value: novel.status, inline: true },
+        { name: 'Channel', value: channel ? `<#${channel.id}>` : 'Not created', inline: true }
       )
       .setFooter({ text: 'Use /novel write to generate the outline' });
 
@@ -236,6 +246,94 @@ class IluvatarBot {
     }
 
     await interaction.editReply({ embeds: [embed] });
+
+    // Send a welcome message to the new channel
+    if (channel) {
+      const welcomeEmbed = new EmbedBuilder()
+        .setTitle(`📖 ${novel.title}`)
+        .setColor(0x9932cc)
+        .setDescription(premise || 'A new novel begins...')
+        .addFields(
+          { name: 'Genre', value: novel.genre, inline: true },
+          { name: 'Language', value: novel.language === 'zh' ? 'Chinese (中文)' : 'English', inline: true },
+          { name: 'Status', value: 'Planning', inline: true }
+        )
+        .setFooter({ text: `Novel ID: ${novel.id}` })
+        .setTimestamp();
+
+      await channel.send({ embeds: [welcomeEmbed] });
+    }
+  }
+
+  /**
+   * Create a dedicated Discord channel for a novel
+   * Creates under "ILUVATAR Novels" category (creates category if needed)
+   */
+  async createNovelChannel(guild, novel) {
+    if (!guild) {
+      console.log('[Discord] No guild available for channel creation');
+      return null;
+    }
+
+    try {
+      // Find or create the ILUVATAR Novels category
+      let category = guild.channels.cache.find(
+        c => c.type === ChannelType.GuildCategory && c.name === 'ILUVATAR Novels'
+      );
+
+      if (!category) {
+        category = await guild.channels.create({
+          name: 'ILUVATAR Novels',
+          type: ChannelType.GuildCategory
+        });
+        console.log('[Discord] Created ILUVATAR Novels category');
+      }
+
+      // Create channel name from novel title (Discord-safe)
+      // Remove special characters, replace spaces with hyphens, lowercase
+      const channelName = novel.title
+        .toLowerCase()
+        .replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, '') // Keep alphanumeric, Chinese chars, spaces, hyphens
+        .replace(/\s+/g, '-')                       // Spaces to hyphens
+        .substring(0, 90);                          // Max 100 chars, leave room for prefix
+
+      const channel = await guild.channels.create({
+        name: `novel-${channelName}`,
+        type: ChannelType.GuildText,
+        parent: category.id,
+        topic: `Novel: ${novel.title} | ID: ${novel.id} | Genre: ${novel.genre}`
+      });
+
+      console.log(`[Discord] Created channel #${channel.name} for novel ${novel.id}`);
+      return channel;
+
+    } catch (err) {
+      console.error('[Discord] Failed to create novel channel:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Send a message to a novel's dedicated channel
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} embed - Discord EmbedBuilder object
+   */
+  async sendToNovelChannel(novelId, embed) {
+    try {
+      const novel = await this.novelManager.getNovel(novelId);
+      if (!novel || !novel.channelId) {
+        console.log(`[Discord] No channel for novel ${novelId}`);
+        return;
+      }
+
+      const channel = await this.client.channels.fetch(novel.channelId);
+      if (channel) {
+        await channel.send({ embeds: [embed] });
+      }
+    } catch (err) {
+      console.error(`[Discord] Failed to send to novel channel:`, err);
+    }
   }
 
   /**

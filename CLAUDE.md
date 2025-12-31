@@ -34,6 +34,16 @@ The user is learning ML through this project. Honesty is more valuable than vali
 
 Check `docs/SESSION-CONTEXT.md` for concepts covered in previous sessions to avoid repetition.
 
+### Phase Transitions
+
+**IMPORTANT**: At the start of each new phase, provide a recap of the previous phase(s) covering:
+1. What was built (files, modules, systems)
+2. Key concepts learned
+3. Architecture decisions made and why
+4. How this phase connects to the next
+
+This reinforces learning and ensures continuity across sessions.
+
 ---
 
 ## Project Overview

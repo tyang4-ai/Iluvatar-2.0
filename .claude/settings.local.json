@@ -9,7 +9,11 @@
       "Bash(aws ec2 wait:*)",
       "Bash(aws ec2 modify-instance-attribute:*)",
       "Bash(aws ec2 start-instances:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase A Complete: Infrastructure for novel writer pipeline\n\nCore Modules:\n- message-bus.js: Pub/Sub agent communication via Redis\n- model-config.js: Gandalf/Frodo/Elrond tier configuration\n- novel-manager.js: Novel lifecycle with configurable thresholds\n- s3-storage.js: Backup, export, and DPO training data storage\n\nOrchestration:\n- discord-bot.js: 6 slash commands \\(/novel create/status/write/pause/resume/list\\)\n- n8n-workflow-setup.md: N8N configuration guide\n- n8n-workflow-export.json: Importable workflow\n\nAgent Prompts:\n- gandalf-planning.md: Planning agent \\(outline creation\\)\n- frodo-writing.md: Writing agent \\(chapter generation\\)\n- elrond-critic.md: Critic agent \\(quality evaluation\\)\n\nKey decisions:\n- Monolingual novels \\(zh or en, not both\\)\n- Text markers instead of JSON for agent output\n- Configurable pass threshold \\(default 70\\) and max revisions \\(default 3\\)\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git remote set-url:*)"
     ]
   }
 }
