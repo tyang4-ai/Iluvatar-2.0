@@ -1,0 +1,83 @@
+{
+  "name": "Iluvatar 2.0",
+  "description": "Novel writing workflow with human-in-the-loop feedback",
+  "version": "2.0",
+  "lastUpdated": "2026-01-02",
+  "workflowId": "8tFcVPoUDcv78H2X",
+  "webhookUrl": "http://50.18.245.194:5678/webhook/iluvatar-trigger",
+  "routes": {
+    "outline": {
+      "description": "Gandalf creates novel outline",
+      "flow": "Route Action → Build Gandalf Prompt → Gandalf → Save Outline to Redis"
+    },
+    "write": {
+      "description": "Frodo writes chapter based on outline",
+      "flow": "Route Action → Load Outline → Build Frodo Prompt → Frodo → Save Chapter to Redis"
+    },
+    "critique": {
+      "description": "Elrond evaluates chapter quality",
+      "flow": "Route Action → Load Chapter → Build Elrond Prompt → Elrond → Save Critique to Redis"
+    },
+    "revise_outline": {
+      "description": "Gandalf revises outline based on human feedback",
+      "flow": "Route Action → Load Current Outline → Build Gandalf Prompt (revise) → Gandalf (revise) → Save Revised Outline"
+    },
+    "revise_chapter": {
+      "description": "Frodo revises chapter based on human feedback",
+      "flow": "Route Action → [Load Current Chapter + Load Outline for Context] → Merge → Build Frodo Prompt (revise) → Frodo (revise) → Save Chapter to Redis (revise)"
+    }
+  },
+  "agents": {
+    "gandalf": {
+      "model": "claude-opus-4-5-20251101",
+      "purpose": "Planning agent - creates and revises outlines",
+      "thinkingEnabled": true
+    },
+    "frodo": {
+      "model": "claude-opus-4-5-20251101",
+      "purpose": "Writing agent - writes and revises chapters",
+      "thinkingEnabled": true
+    },
+    "elrond": {
+      "model": "claude-opus-4-5-20251101",
+      "purpose": "Critic agent - evaluates chapter quality (score 0-100)",
+      "thinkingEnabled": true,
+      "outputParser": {
+        "schema": {
+          "score": "number (0-100)",
+          "strengths": "array of strings",
+          "weaknesses": "array of strings",
+          "suggestions": "string",
+          "passed": "boolean (score >= 70)"
+        }
+      }
+    }
+  },
+  "redis": {
+    "host": "172.17.0.1",
+    "port": 6379,
+    "keys": {
+      "outline": "novel:{novelId}:outline",
+      "chapter": "novel:{novelId}:chapter:{chapterNum}",
+      "critique": "novel:{novelId}:critique:{chapterNum}"
+    }
+  },
+  "payload": {
+    "required": {
+      "action": "string - one of: outline, write, critique, revise_outline, revise_chapter",
+      "novelId": "string - unique novel identifier"
+    },
+    "optional": {
+      "metadata": "object - novel metadata (title, genre, language, etc.)",
+      "chapterNum": "number - chapter number for write/critique/revise actions",
+      "feedback": "string - human feedback for revision actions"
+    }
+  },
+  "notes": [
+    "N8N running at http://50.18.245.194:5678",
+    "Anthropic credentials stored in N8N credential store",
+    "Redis accessible via Docker bridge network (172.17.0.1)",
+    "All agents use Claude Opus 4.5 with extended thinking enabled",
+    "Structured output parsers ensure consistent JSON responses"
+  ]
+}

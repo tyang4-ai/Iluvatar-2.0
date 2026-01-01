@@ -92,6 +92,7 @@ class NovelManager {
       targetWordsPerChapter: config.targetWordsPerChapter || 3000,
       status: NOVEL_STATUS.PLANNING,
       currentChapter: 0,
+      outlineApproved: false,
       createdAt: now,
       updatedAt: now
     };
@@ -102,6 +103,7 @@ class NovelManager {
     await this.state.set(scope, 'chapters', {});
     await this.state.set(scope, 'critiques', {});
     await this.state.set(scope, 'revisions', {});
+    await this.state.set(scope, 'feedback', []);
 
     // Register in global novel index
     await this.state.writeWithRetry('novel-manager', 'global', async (currentState) => {
@@ -536,6 +538,115 @@ class NovelManager {
       throw new Error(`Novel not found: ${novelId}`);
     }
     return novel.currentChapter + 1;
+  }
+
+  /**
+   * Store human feedback for later revision
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} feedback - Feedback object
+   * @param {string} feedback.target - What the feedback is for (outline, chapter X)
+   * @param {string} feedback.comment - The feedback comment
+   * @param {string} feedback.timestamp - When feedback was given
+   */
+  async storeFeedback(novelId, feedback) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const feedbackList = currentState.feedback || [];
+      feedbackList.push(feedback);
+      return { feedback: feedbackList };
+    });
+
+    console.log(`[NovelManager] Stored feedback for ${novelId}: ${feedback.target}`);
+  }
+
+  /**
+   * Get latest feedback for a novel
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Object|null>} Latest feedback or null
+   */
+  async getLatestFeedback(novelId) {
+    const scope = this.getScope(novelId);
+    const feedbackList = await this.state.get(scope, 'feedback');
+    if (!feedbackList || feedbackList.length === 0) {
+      return null;
+    }
+    return feedbackList[feedbackList.length - 1];
+  }
+
+  /**
+   * Approve the outline, allowing chapter writing to proceed
+   *
+   * @param {string} novelId - Novel ID
+   */
+  async approveOutline(novelId) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      metadata.outlineApproved = true;
+      metadata.status = NOVEL_STATUS.WRITING;
+      metadata.updatedAt = new Date().toISOString();
+
+      return { metadata };
+    });
+
+    console.log(`[NovelManager] Outline approved for ${novelId}`);
+  }
+
+  /**
+   * Approve a chapter, marking it as final and advancing to next
+   *
+   * @param {string} novelId - Novel ID
+   * @param {number} chapterNum - Chapter number to approve
+   */
+  async approveChapter(novelId, chapterNum) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      const chapters = currentState.chapters || {};
+
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      if (!chapters[chapterNum]) {
+        throw new Error(`Chapter ${chapterNum} not found`);
+      }
+
+      // Mark chapter as approved
+      chapters[chapterNum].approved = true;
+      chapters[chapterNum].approvedAt = new Date().toISOString();
+
+      // Advance current chapter if this was the current one
+      if (chapterNum === metadata.currentChapter) {
+        metadata.currentChapter = chapterNum + 1;
+      }
+
+      metadata.status = NOVEL_STATUS.WRITING;
+      metadata.updatedAt = new Date().toISOString();
+
+      return { metadata, chapters };
+    });
+
+    console.log(`[NovelManager] Chapter ${chapterNum} approved for ${novelId}`);
+  }
+
+  /**
+   * Mark novel as completed
+   *
+   * @param {string} novelId - Novel ID
+   */
+  async markCompleted(novelId) {
+    await this.updateStatus(novelId, NOVEL_STATUS.COMPLETED);
+    console.log(`[NovelManager] Novel ${novelId} marked as COMPLETED`);
   }
 }
 

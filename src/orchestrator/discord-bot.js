@@ -1,16 +1,19 @@
 /**
  * ILUVATAR - Discord Bot
  *
- * Provides slash commands for novel management.
+ * Provides slash commands for novel management with human-in-the-loop.
  * Triggers N8N workflows and reports results back to Discord.
  *
  * Commands:
- *   /novel create - Start a new novel project
- *   /novel status - Check current novel state
- *   /novel write  - Generate next chapter (or outline if none exists)
- *   /novel pause  - Pause generation
- *   /novel resume - Resume generation
- *   /novel list   - List all novels
+ *   /novel create   - Start a new novel project, generates outline
+ *   /novel feedback - Send feedback to revise the current outline/chapter
+ *   /novel approve  - Approve current outline, ready for writing
+ *   /novel write    - Generate next chapter (requires approved outline)
+ *   /novel critique - Get Elrond's evaluation of the latest chapter
+ *   /novel status   - Check current novel state
+ *   /novel pause    - Pause generation
+ *   /novel resume   - Resume generation
+ *   /novel list     - List all novels
  */
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, ChannelType, PermissionFlagsBits } = require('discord.js');
@@ -117,6 +120,38 @@ class IluvatarBot {
           sub.setName('list')
             .setDescription('List all novels')
         )
+        .addSubcommand(sub =>
+          sub.setName('feedback')
+            .setDescription('Send feedback to revise the current outline or chapter')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (leave empty for latest)')
+                .setRequired(false))
+            .addStringOption(opt =>
+              opt.setName('comment')
+                .setDescription('Your feedback or revision request')
+                .setRequired(true))
+        )
+        .addSubcommand(sub =>
+          sub.setName('approve')
+            .setDescription('Approve current outline or chapter, proceed to next step')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (leave empty for latest)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
+          sub.setName('critique')
+            .setDescription('Get Elrond\'s evaluation of the latest chapter')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (leave empty for latest)')
+                .setRequired(false))
+            .addIntegerOption(opt =>
+              opt.setName('chapter')
+                .setDescription('Chapter number (leave empty for latest)')
+                .setRequired(false))
+        )
         .toJSON()
     ];
   }
@@ -184,6 +219,15 @@ class IluvatarBot {
             break;
           case 'list':
             await this.handleList(interaction);
+            break;
+          case 'feedback':
+            await this.handleFeedback(interaction);
+            break;
+          case 'approve':
+            await this.handleApprove(interaction);
+            break;
+          case 'critique':
+            await this.handleCritique(interaction);
             break;
           default:
             await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -409,24 +453,35 @@ class IluvatarBot {
     const { metadata } = state;
     let action;
     let nextStep;
+    let chapterNum;
 
     if (metadata.status === 'planning' || !state.outline) {
       action = 'outline';
       nextStep = 'Gandalf will create the outline';
+    } else if (!metadata.outlineApproved) {
+      // Outline exists but not approved yet
+      await interaction.editReply(
+        `📋 Outline exists but needs approval.\n` +
+        `Use \`/novel status\` to review it, then \`/novel approve\` to proceed.\n` +
+        `Or use \`/novel feedback\` to request changes.`
+      );
+      return;
     } else if (metadata.status === 'revising') {
       action = 'revise';
       nextStep = `Frodo will revise chapter ${metadata.currentChapter}`;
+      chapterNum = metadata.currentChapter;
     } else {
       action = 'write';
-      const nextChapter = await this.novelManager.getNextChapterNum(novelId);
-      nextStep = `Frodo will write chapter ${nextChapter}`;
+      chapterNum = await this.novelManager.getNextChapterNum(novelId);
+      nextStep = `Frodo will write chapter ${chapterNum}`;
     }
 
     // Trigger N8N workflow
     await this.triggerN8N({
       action,
       novelId,
-      metadata
+      metadata,
+      chapterNum
     });
 
     const embed = new EmbedBuilder()
@@ -495,6 +550,206 @@ class IluvatarBot {
     if (novels.length > 10) {
       embed.setFooter({ text: `...and ${novels.length - 10} more` });
     }
+
+    await interaction.editReply({ embeds: [embed] });
+  }
+
+  /**
+   * Handle /novel feedback - Send feedback to revise outline or chapter
+   */
+  async handleFeedback(interaction) {
+    let novelId = interaction.options.getString('novel_id');
+    const comment = interaction.options.getString('comment');
+
+    await interaction.deferReply();
+
+    // If no ID provided, get the latest novel
+    if (!novelId) {
+      const novels = await this.novelManager.listNovels();
+      if (novels.length === 0) {
+        await interaction.editReply('No novels found. Use `/novel create` to start one.');
+        return;
+      }
+      novelId = novels[0].id;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const { metadata } = state;
+
+    // Determine what we're giving feedback on
+    let feedbackTarget;
+    let action;
+
+    if (metadata.status === 'planning' || !state.outline) {
+      // No outline yet - can't give feedback
+      await interaction.editReply('No outline exists yet. Use `/novel write` to generate one first.');
+      return;
+    } else if (!metadata.outlineApproved) {
+      // Outline exists but not approved - feedback is for outline
+      feedbackTarget = 'outline';
+      action = 'revise_outline';
+    } else {
+      // Outline approved - feedback is for current chapter
+      feedbackTarget = `chapter ${metadata.currentChapter}`;
+      action = 'revise_chapter';
+    }
+
+    // Store feedback in novel manager (which uses Redis)
+    await this.novelManager.storeFeedback(novelId, {
+      target: feedbackTarget,
+      comment,
+      timestamp: new Date().toISOString()
+    });
+
+    // Trigger N8N to process the revision
+    await this.triggerN8N({
+      action,
+      novelId,
+      metadata,
+      feedback: comment,
+      chapterNum: metadata.currentChapter
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle('💬 Feedback Submitted')
+      .setColor(0xffaa00)
+      .addFields(
+        { name: 'Novel', value: metadata.title, inline: true },
+        { name: 'Target', value: feedbackTarget, inline: true },
+        { name: 'Feedback', value: comment.substring(0, 200) + (comment.length > 200 ? '...' : ''), inline: false }
+      )
+      .setFooter({ text: 'Revision in progress. Check /novel status for updates.' });
+
+    await interaction.editReply({ embeds: [embed] });
+
+    // Also post to the novel's channel
+    await this.sendToNovelChannel(novelId, embed);
+  }
+
+  /**
+   * Handle /novel approve - Approve current outline or chapter
+   */
+  async handleApprove(interaction) {
+    let novelId = interaction.options.getString('novel_id');
+
+    await interaction.deferReply();
+
+    // If no ID provided, get the latest novel
+    if (!novelId) {
+      const novels = await this.novelManager.listNovels();
+      if (novels.length === 0) {
+        await interaction.editReply('No novels found. Use `/novel create` to start one.');
+        return;
+      }
+      novelId = novels[0].id;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const { metadata } = state;
+
+    // Determine what we're approving
+    let approvalTarget;
+    let nextStep;
+
+    if (!state.outline) {
+      await interaction.editReply('No outline exists yet. Use `/novel write` to generate one first.');
+      return;
+    } else if (!metadata.outlineApproved) {
+      // Approving the outline
+      approvalTarget = 'Outline';
+      nextStep = 'Ready for chapter writing. Use `/novel write` to generate Chapter 1.';
+      await this.novelManager.approveOutline(novelId);
+    } else {
+      // Approving current chapter
+      approvalTarget = `Chapter ${metadata.currentChapter}`;
+      const nextChapter = metadata.currentChapter + 1;
+      if (nextChapter > metadata.targetChapters) {
+        nextStep = 'All chapters complete! Novel is finished.';
+        await this.novelManager.markCompleted(novelId);
+      } else {
+        nextStep = `Use \`/novel write\` to generate Chapter ${nextChapter}.`;
+        await this.novelManager.approveChapter(novelId, metadata.currentChapter);
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('✅ Approved')
+      .setColor(0x00ff00)
+      .addFields(
+        { name: 'Novel', value: metadata.title, inline: true },
+        { name: 'Approved', value: approvalTarget, inline: true },
+        { name: 'Next Step', value: nextStep, inline: false }
+      );
+
+    await interaction.editReply({ embeds: [embed] });
+
+    // Also post to the novel's channel
+    await this.sendToNovelChannel(novelId, embed);
+  }
+
+  /**
+   * Handle /novel critique - Get Elrond's evaluation
+   */
+  async handleCritique(interaction) {
+    let novelId = interaction.options.getString('novel_id');
+    let chapterNum = interaction.options.getInteger('chapter');
+
+    await interaction.deferReply();
+
+    // If no ID provided, get the latest novel
+    if (!novelId) {
+      const novels = await this.novelManager.listNovels();
+      if (novels.length === 0) {
+        await interaction.editReply('No novels found. Use `/novel create` to start one.');
+        return;
+      }
+      novelId = novels[0].id;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const { metadata, stats } = state;
+
+    // If no chapter specified, use the current/latest chapter
+    if (!chapterNum) {
+      chapterNum = stats.chaptersWritten || metadata.currentChapter;
+    }
+
+    if (chapterNum < 1 || chapterNum > stats.chaptersWritten) {
+      await interaction.editReply(`Invalid chapter number. Written chapters: 1-${stats.chaptersWritten}`);
+      return;
+    }
+
+    // Trigger N8N to get critique
+    await this.triggerN8N({
+      action: 'critique',
+      novelId,
+      metadata,
+      chapterNum
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle('🔍 Critique Requested')
+      .setColor(0x9932cc)
+      .addFields(
+        { name: 'Novel', value: metadata.title, inline: true },
+        { name: 'Chapter', value: String(chapterNum), inline: true }
+      )
+      .setFooter({ text: 'Elrond is evaluating. Results will be posted to the novel channel.' });
 
     await interaction.editReply({ embeds: [embed] });
   }
