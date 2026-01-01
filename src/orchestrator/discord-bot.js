@@ -124,13 +124,13 @@ class IluvatarBot {
           sub.setName('feedback')
             .setDescription('Send feedback to revise the current outline or chapter')
             .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID (leave empty for latest)')
-                .setRequired(false))
-            .addStringOption(opt =>
               opt.setName('comment')
                 .setDescription('Your feedback or revision request')
                 .setRequired(true))
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (leave empty for latest)')
+                .setRequired(false))
         )
         .addSubcommand(sub =>
           sub.setName('approve')
