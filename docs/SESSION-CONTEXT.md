@@ -165,9 +165,12 @@ Novel contributions being explored:
    - ✅ B.5: N8N callback guide (Discord channel posting)
    - ✅ B.6: Updated agent prompts for Story Bible I/O
    - ✅ B.6b: Bible context wired into webhook payloads (handleWrite, handleFeedback, handleCritique)
-   - ⏳ B.7: Deploy and test on EC2
-   - ⏳ B.8: Manual N8N workflow updates (Format + Post to Discord nodes)
-   - ⏳ B.9: Full end-to-end test
+   - ✅ B.7: Deploy and test on EC2 (bot running via pm2, bible retriever enabled)
+   - ✅ B.8: Manual N8N workflow updates (all 5 Discord callback paths configured)
+   - ✅ B.9a: Library channel auto-creation on bot startup
+   - ✅ B.9b: Channel-based command gating (library vs novel channels)
+   - ✅ B.9c: `/novel delete` command for library channel
+   - ⏳ B.10: Full end-to-end test (redeploy bot, test complete workflow)
 4. Phase C: Data pipeline for preference collection
 
 ---

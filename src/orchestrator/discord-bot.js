@@ -46,6 +46,10 @@ class IluvatarBot {
     if (!this.clientId) throw new Error('Discord client ID required');
     if (!this.novelManager) throw new Error('NovelManager instance required');
 
+    // Channel IDs (set during ensureLibraryChannel)
+    this.libraryChannelId = null;
+    this.novelsCategoryId = null;
+
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds]
     });
@@ -102,27 +106,15 @@ class IluvatarBot {
         )
         .addSubcommand(sub =>
           sub.setName('write')
-            .setDescription('Generate next chapter (or outline if none)')
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID (leave empty for latest)')
-                .setRequired(false))
+            .setDescription('Generate next chapter (or outline if none) - use in novel channel')
         )
         .addSubcommand(sub =>
           sub.setName('pause')
-            .setDescription('Pause novel generation')
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID')
-                .setRequired(true))
+            .setDescription('Pause novel generation - use in novel channel')
         )
         .addSubcommand(sub =>
           sub.setName('resume')
-            .setDescription('Resume novel generation')
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID')
-                .setRequired(true))
+            .setDescription('Resume novel generation - use in novel channel')
         )
         .addSubcommand(sub =>
           sub.setName('list')
@@ -130,31 +122,19 @@ class IluvatarBot {
         )
         .addSubcommand(sub =>
           sub.setName('feedback')
-            .setDescription('Send feedback to revise the current outline or chapter')
+            .setDescription('Send feedback to revise the current outline or chapter - use in novel channel')
             .addStringOption(opt =>
               opt.setName('comment')
                 .setDescription('Your feedback or revision request')
                 .setRequired(true))
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID (leave empty for latest)')
-                .setRequired(false))
         )
         .addSubcommand(sub =>
           sub.setName('approve')
-            .setDescription('Approve current outline or chapter, proceed to next step')
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID (leave empty for latest)')
-                .setRequired(false))
+            .setDescription('Approve current outline or chapter - use in novel channel')
         )
         .addSubcommand(sub =>
           sub.setName('critique')
-            .setDescription('Get Elrond\'s evaluation of the latest chapter')
-            .addStringOption(opt =>
-              opt.setName('novel_id')
-                .setDescription('Novel ID (leave empty for latest)')
-                .setRequired(false))
+            .setDescription('Get Elrond\'s evaluation - use in novel channel')
             .addIntegerOption(opt =>
               opt.setName('chapter')
                 .setDescription('Chapter number (leave empty for latest)')
@@ -208,6 +188,14 @@ class IluvatarBot {
                 .setDescription('Chapter number (0 = outline)')
                 .setRequired(true))
         )
+        .addSubcommand(sub =>
+          sub.setName('delete')
+            .setDescription('Delete a novel and its channel (library only)')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID to delete')
+                .setRequired(true))
+        )
         .toJSON()
     ];
   }
@@ -243,11 +231,140 @@ class IluvatarBot {
   }
 
   /**
+   * Ensure library channel and novels category exist
+   * Called on bot startup
+   */
+  async ensureLibraryChannel(guild) {
+    try {
+      // Find or create the ILUVATAR Novels category
+      let category = guild.channels.cache.find(
+        c => c.type === ChannelType.GuildCategory && c.name === 'ILUVATAR Novels'
+      );
+
+      if (!category) {
+        category = await guild.channels.create({
+          name: 'ILUVATAR Novels',
+          type: ChannelType.GuildCategory
+        });
+        console.log('[Discord] Created ILUVATAR Novels category');
+      }
+      this.novelsCategoryId = category.id;
+
+      // Find or create the library channel
+      let library = guild.channels.cache.find(
+        c => c.type === ChannelType.GuildText && c.name === 'library' && c.parentId === category.id
+      );
+
+      if (!library) {
+        library = await guild.channels.create({
+          name: 'library',
+          type: ChannelType.GuildText,
+          parent: category.id,
+          topic: 'ILUVATAR Library - Create, list, read, and manage all novels here'
+        });
+        console.log('[Discord] Created library channel');
+
+        // Send welcome message
+        const { EmbedBuilder } = require('discord.js');
+        const welcomeEmbed = new EmbedBuilder()
+          .setTitle('📚 ILUVATAR Library')
+          .setColor(0x9932cc)
+          .setDescription('Welcome to the ILUVATAR Novel Writer!\n\nThis is the library channel where you can manage all your novels.')
+          .addFields(
+            { name: 'Create a Novel', value: '`/novel create title:\"Your Title\"`', inline: false },
+            { name: 'List All Novels', value: '`/novel list`', inline: false },
+            { name: 'Read Any Chapter', value: '`/novel read novel_id:xxx chapter:1`', inline: false },
+            { name: 'Check Status', value: '`/novel status novel_id:xxx`', inline: false },
+            { name: 'Delete a Novel', value: '`/novel delete novel_id:xxx`', inline: false }
+          )
+          .setFooter({ text: 'Novel-specific commands are used in their dedicated channels' });
+
+        await library.send({ embeds: [welcomeEmbed] });
+      }
+      this.libraryChannelId = library.id;
+
+      console.log(`[Discord] Library channel: #${library.name} (${library.id})`);
+      console.log(`[Discord] Novels category: ${category.name} (${category.id})`);
+
+    } catch (err) {
+      console.error('[Discord] Failed to ensure library channel:', err);
+    }
+  }
+
+  /**
+   * Check if a channel is the library channel
+   */
+  isLibraryChannel(channelId) {
+    return channelId === this.libraryChannelId;
+  }
+
+  /**
+   * Check if a channel is a novel-specific channel
+   */
+  async isNovelChannel(channelId) {
+    const novelId = await this.novelManager.getNovelByChannel(channelId);
+    return novelId !== null;
+  }
+
+  /**
+   * Get channel type for command gating
+   * @returns {'library' | 'novel' | 'other'}
+   */
+  async getChannelType(channelId) {
+    if (this.isLibraryChannel(channelId)) {
+      return 'library';
+    }
+    if (await this.isNovelChannel(channelId)) {
+      return 'novel';
+    }
+    return 'other';
+  }
+
+  /**
+   * Validate if a command can be used in the current channel
+   * Returns error message if invalid, null if valid
+   */
+  async validateCommandChannel(subcommand, channelId) {
+    const channelType = await this.getChannelType(channelId);
+
+    // Commands only allowed in library channel
+    const libraryOnlyCommands = ['create', 'list', 'read', 'delete'];
+    if (libraryOnlyCommands.includes(subcommand)) {
+      if (channelType !== 'library') {
+        return `\`/novel ${subcommand}\` can only be used in the <#${this.libraryChannelId}> channel.`;
+      }
+      return null;
+    }
+
+    // Commands only allowed in novel channels
+    const novelOnlyCommands = ['write', 'feedback', 'approve', 'critique', 'recall', 'cascade', 'skip_cascade', 'pause', 'resume'];
+    if (novelOnlyCommands.includes(subcommand)) {
+      if (channelType !== 'novel') {
+        if (channelType === 'library') {
+          return `\`/novel ${subcommand}\` must be used in a novel's dedicated channel. Create a novel first with \`/novel create\`.`;
+        }
+        return `\`/novel ${subcommand}\` must be used in a novel's dedicated channel.`;
+      }
+      return null;
+    }
+
+    // Commands allowed in both (status, bible)
+    // These work anywhere but may require novel_id in library channel
+    return null;
+  }
+
+  /**
    * Set up event handlers
    */
   setupEventHandlers() {
-    this.client.once('ready', () => {
+    this.client.once('ready', async () => {
       console.log(`[Discord] Bot logged in as ${this.client.user.tag}`);
+
+      // Ensure library channel exists
+      if (this.guildId) {
+        const guild = await this.client.guilds.fetch(this.guildId);
+        await this.ensureLibraryChannel(guild);
+      }
     });
 
     this.client.on('interactionCreate', async (interaction) => {
@@ -255,6 +372,13 @@ class IluvatarBot {
       if (interaction.commandName !== 'novel') return;
 
       const subcommand = interaction.options.getSubcommand();
+
+      // Validate channel access
+      const channelError = await this.validateCommandChannel(subcommand, interaction.channelId);
+      if (channelError) {
+        await interaction.reply({ content: channelError, ephemeral: true });
+        return;
+      }
 
       try {
         switch (subcommand) {
@@ -300,6 +424,9 @@ class IluvatarBot {
           case 'read':
             await this.handleRead(interaction);
             break;
+          case 'delete':
+            await this.handleDelete(interaction);
+            break;
           default:
             await interaction.reply({ content: 'Unknown command', ephemeral: true });
         }
@@ -338,9 +465,9 @@ class IluvatarBot {
     // Create a dedicated Discord channel for this novel
     const channel = await this.createNovelChannel(interaction.guild, novel);
 
-    // Update novel metadata with the channel ID
+    // Link channel to novel (sets up bidirectional mapping)
     if (channel) {
-      await this.novelManager.updateNovelMetadata(novel.id, { channelId: channel.id });
+      await this.novelManager.linkChannel(novel.id, channel.id, channel.name);
     }
 
     const embed = new EmbedBuilder()
@@ -497,20 +624,16 @@ class IluvatarBot {
 
   /**
    * Handle /novel write
+   * (Novel channel only - novel ID from channel)
    */
   async handleWrite(interaction) {
-    let novelId = interaction.options.getString('novel_id');
-
     await interaction.deferReply();
 
-    // If no ID provided, get the latest novel
+    // Get novel from channel (validated by command gating)
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
     if (!novelId) {
-      const novels = await this.novelManager.listNovels();
-      if (novels.length === 0) {
-        await interaction.editReply('No novels found. Use `/novel create` to start one.');
-        return;
-      }
-      novelId = novels[0].id;
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
     }
 
     const state = await this.novelManager.getNovelState(novelId);
@@ -586,27 +709,38 @@ class IluvatarBot {
 
   /**
    * Handle /novel pause
+   * (Novel channel only - novel ID from channel)
    */
   async handlePause(interaction) {
-    const novelId = interaction.options.getString('novel_id');
-
     await interaction.deferReply();
-    await this.novelManager.pauseNovel(novelId);
 
-    await interaction.editReply(`⏸️ Novel \`${novelId}\` paused.`);
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    if (!novelId) {
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
+    }
+
+    await this.novelManager.pauseNovel(novelId);
+    const novel = await this.novelManager.getNovel(novelId);
+    await interaction.editReply(`⏸️ **${novel.title}** paused.`);
   }
 
   /**
    * Handle /novel resume
+   * (Novel channel only - novel ID from channel)
    */
   async handleResume(interaction) {
-    const novelId = interaction.options.getString('novel_id');
-
     await interaction.deferReply();
-    await this.novelManager.resumeNovel(novelId);
 
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    if (!novelId) {
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
+    }
+
+    await this.novelManager.resumeNovel(novelId);
     const novel = await this.novelManager.getNovel(novelId);
-    await interaction.editReply(`▶️ Novel \`${novelId}\` resumed. Status: ${novel.status}`);
+    await interaction.editReply(`▶️ **${novel.title}** resumed. Status: ${novel.status}`);
   }
 
   /**
@@ -643,21 +777,18 @@ class IluvatarBot {
 
   /**
    * Handle /novel feedback - Send feedback to revise outline or chapter
+   * (Novel channel only - novel ID from channel)
    */
   async handleFeedback(interaction) {
-    let novelId = interaction.options.getString('novel_id');
     const comment = interaction.options.getString('comment');
 
     await interaction.deferReply();
 
-    // If no ID provided, get the latest novel
+    // Get novel from channel (validated by command gating)
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
     if (!novelId) {
-      const novels = await this.novelManager.listNovels();
-      if (novels.length === 0) {
-        await interaction.editReply('No novels found. Use `/novel create` to start one.');
-        return;
-      }
-      novelId = novels[0].id;
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
     }
 
     const state = await this.novelManager.getNovelState(novelId);
@@ -732,20 +863,16 @@ class IluvatarBot {
 
   /**
    * Handle /novel approve - Approve current outline or chapter
+   * (Novel channel only - novel ID from channel)
    */
   async handleApprove(interaction) {
-    let novelId = interaction.options.getString('novel_id');
-
     await interaction.deferReply();
 
-    // If no ID provided, get the latest novel
+    // Get novel from channel (validated by command gating)
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
     if (!novelId) {
-      const novels = await this.novelManager.listNovels();
-      if (novels.length === 0) {
-        await interaction.editReply('No novels found. Use `/novel create` to start one.');
-        return;
-      }
-      novelId = novels[0].id;
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
     }
 
     const state = await this.novelManager.getNovelState(novelId);
@@ -798,21 +925,18 @@ class IluvatarBot {
 
   /**
    * Handle /novel critique - Get Elrond's evaluation
+   * (Novel channel only - novel ID from channel)
    */
   async handleCritique(interaction) {
-    let novelId = interaction.options.getString('novel_id');
     let chapterNum = interaction.options.getInteger('chapter');
 
     await interaction.deferReply();
 
-    // If no ID provided, get the latest novel
+    // Get novel from channel (validated by command gating)
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
     if (!novelId) {
-      const novels = await this.novelManager.listNovels();
-      if (novels.length === 0) {
-        await interaction.editReply('No novels found. Use `/novel create` to start one.');
-        return;
-      }
-      novelId = novels[0].id;
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
     }
 
     const state = await this.novelManager.getNovelState(novelId);
@@ -1186,6 +1310,59 @@ class IluvatarBot {
     for (let i = 1; i < embeds.length; i++) {
       await interaction.followUp({ embeds: [embeds[i]] });
     }
+  }
+
+  /**
+   * Handle /novel delete - Delete a novel and its channel
+   */
+  async handleDelete(interaction) {
+    const novelId = interaction.options.getString('novel_id');
+
+    await interaction.deferReply();
+
+    // Check if this is the library channel
+    if (!this.isLibraryChannel(interaction.channelId)) {
+      await interaction.editReply('❌ `/novel delete` can only be used in the library channel.');
+      return;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const { metadata } = state;
+    const title = metadata.title;
+
+    // Delete the novel channel if it exists
+    if (metadata.discordChannelId) {
+      try {
+        const channel = await this.client.channels.fetch(metadata.discordChannelId);
+        if (channel) {
+          await channel.delete(`Novel "${title}" deleted by ${interaction.user.tag}`);
+          console.log(`[Discord] Deleted channel for novel ${novelId}`);
+        }
+      } catch (err) {
+        console.error(`[Discord] Failed to delete channel:`, err);
+        // Continue with novel deletion even if channel deletion fails
+      }
+    }
+
+    // Delete the novel from storage
+    await this.novelManager.deleteNovel(novelId);
+
+    const embed = new EmbedBuilder()
+      .setTitle('🗑️ Novel Deleted')
+      .setColor(0xff0000)
+      .addFields(
+        { name: 'Title', value: title, inline: true },
+        { name: 'Novel ID', value: novelId, inline: true }
+      )
+      .setFooter({ text: `Deleted by ${interaction.user.tag}` })
+      .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
   }
 
   /**
