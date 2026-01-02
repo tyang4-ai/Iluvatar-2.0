@@ -5,25 +5,29 @@
  * Triggers N8N workflows and reports results back to Discord.
  *
  * Channel Types:
- *   - Library channel: /novel create, /novel list, /novel read
- *   - Novel channels: All other commands (context-aware, no novel_id needed)
+ *   - Library channel: /novel create, /novel list, /novel delete
+ *   - Novel channels: /novel write, feedback, approve, critique, recall, cascade, pause, resume
+ *   - Both channels: /novel status, bible, read_* commands (library requires novel_id)
  *
  * Commands:
- *   /novel create   - Start a new novel project (creates dedicated channel)
- *   /novel list     - List all novels (library only)
- *   /novel read     - Read a chapter from any novel (library only)
- *   /novel view     - View current outline or chapter (novel channel only)
- *   /novel status   - Check novel status
- *   /novel write    - Generate next chapter (requires approved outline)
- *   /novel feedback - Send feedback to revise the current outline/chapter
- *   /novel approve  - Approve current outline/chapter
- *   /novel critique - Get Elrond's evaluation of the latest chapter
- *   /novel recall   - Go back to revise an earlier chapter
- *   /novel cascade  - Regenerate chapters after recall
- *   /novel bible    - View the story bible
- *   /novel pause    - Pause generation
- *   /novel resume   - Resume generation
- *   /novel delete   - Delete a novel and its channel (library only)
+ *   /novel create              - Start a new novel project (library only)
+ *   /novel list                - List all novels (library only)
+ *   /novel delete              - Delete a novel and its channel (library only)
+ *   /novel status              - Check novel status
+ *   /novel write               - Generate next chapter (novel channel only)
+ *   /novel feedback            - Send feedback to revise (novel channel only)
+ *   /novel approve             - Approve current outline/chapter (novel channel only)
+ *   /novel critique            - Get Elrond's evaluation (novel channel only)
+ *   /novel recall              - Go back to revise an earlier chapter (novel channel only)
+ *   /novel cascade             - Regenerate chapters after recall (novel channel only)
+ *   /novel bible               - View the story bible
+ *   /novel pause               - Pause generation (novel channel only)
+ *   /novel resume              - Resume generation (novel channel only)
+ *   /novel read_chapter        - Read a specific chapter
+ *   /novel read_outline        - Read the full outline
+ *   /novel read_chapter_summary - Read a chapter's outline summary
+ *   /novel read_section        - Read a range of chapters (e.g., 1-10)
+ *   /novel read_all            - Read the entire novel
  */
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, ChannelType, PermissionFlagsBits } = require('discord.js');
@@ -179,23 +183,59 @@ class IluvatarBot {
                 .setRequired(false))
         )
         .addSubcommand(sub =>
-          sub.setName('read')
-            .setDescription('Read a chapter from any novel (library only)')
+          sub.setName('read_chapter')
+            .setDescription('Read a specific chapter (library: any novel, novel channel: this novel)')
+            .addIntegerOption(opt =>
+              opt.setName('chapter')
+                .setDescription('Chapter number')
+                .setRequired(true))
             .addStringOption(opt =>
               opt.setName('novel_id')
-                .setDescription('Novel ID')
-                .setRequired(true))
-            .addIntegerOption(opt =>
-              opt.setName('chapter')
-                .setDescription('Chapter number (0 = outline)')
-                .setRequired(true))
+                .setDescription('Novel ID (required in library channel)')
+                .setRequired(false))
         )
         .addSubcommand(sub =>
-          sub.setName('view')
-            .setDescription('View current outline or chapter (use in novel channel)')
+          sub.setName('read_outline')
+            .setDescription('Read the full outline')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (required in library channel)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
+          sub.setName('read_chapter_summary')
+            .setDescription('Read a specific chapter\'s outline summary')
             .addIntegerOption(opt =>
               opt.setName('chapter')
-                .setDescription('Chapter number (0 = outline, empty = current)')
+                .setDescription('Chapter number')
+                .setRequired(true))
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (required in library channel)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
+          sub.setName('read_section')
+            .setDescription('Read a range of chapters')
+            .addIntegerOption(opt =>
+              opt.setName('from')
+                .setDescription('Starting chapter number')
+                .setRequired(true))
+            .addIntegerOption(opt =>
+              opt.setName('to')
+                .setDescription('Ending chapter number')
+                .setRequired(true))
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (required in library channel)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
+          sub.setName('read_all')
+            .setDescription('Read the entire novel (all chapters)')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (required in library channel)')
                 .setRequired(false))
         )
         .addSubcommand(sub =>
@@ -338,7 +378,7 @@ class IluvatarBot {
     const channelType = await this.getChannelType(channelId);
 
     // Commands only allowed in library channel
-    const libraryOnlyCommands = ['create', 'list', 'read', 'delete'];
+    const libraryOnlyCommands = ['create', 'list', 'delete'];
     if (libraryOnlyCommands.includes(subcommand)) {
       if (channelType !== 'library') {
         return `\`/novel ${subcommand}\` can only be used in the <#${this.libraryChannelId}> channel.`;
@@ -347,7 +387,17 @@ class IluvatarBot {
     }
 
     // Commands only allowed in novel channels
-    const novelOnlyCommands = ['write', 'feedback', 'approve', 'critique', 'recall', 'cascade', 'skip_cascade', 'pause', 'resume', 'view'];
+    const novelOnlyCommands = ['write', 'feedback', 'approve', 'critique', 'recall', 'cascade', 'skip_cascade', 'pause', 'resume'];
+
+    // Commands that work in both library and novel channels
+    // In library: requires novel_id parameter
+    // In novel channel: auto-resolves from channel
+    const dualChannelCommands = ['read_chapter', 'read_outline', 'read_chapter_summary', 'read_section', 'read_all'];
+    if (dualChannelCommands.includes(subcommand)) {
+      // These commands work in both channels, validation happens in the handler
+      return null;
+    }
+
     if (novelOnlyCommands.includes(subcommand)) {
       if (channelType !== 'novel') {
         if (channelType === 'library') {
@@ -431,11 +481,20 @@ class IluvatarBot {
           case 'bible':
             await this.handleBible(interaction);
             break;
-          case 'read':
-            await this.handleRead(interaction);
+          case 'read_chapter':
+            await this.handleReadChapter(interaction);
             break;
-          case 'view':
-            await this.handleView(interaction);
+          case 'read_outline':
+            await this.handleReadOutline(interaction);
+            break;
+          case 'read_chapter_summary':
+            await this.handleReadChapterSummary(interaction);
+            break;
+          case 'read_section':
+            await this.handleReadSection(interaction);
+            break;
+          case 'read_all':
+            await this.handleReadAll(interaction);
             break;
           case 'delete':
             await this.handleDelete(interaction);
@@ -1263,130 +1322,268 @@ class IluvatarBot {
   }
 
   /**
-   * Handle /novel read - Read a chapter from any novel
+   * Resolve novel ID from channel or provided parameter
+   * Works for dual-channel commands (library or novel channel)
    */
-  async handleRead(interaction) {
-    const novelId = interaction.options.getString('novel_id');
+  async resolveNovelIdForRead(interaction) {
+    let novelId = interaction.options.getString('novel_id');
+
+    // If no ID provided, try to get from channel
+    if (!novelId) {
+      novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    }
+
+    // If still no ID and we're in library channel, error
+    if (!novelId && this.isLibraryChannel(interaction.channelId)) {
+      return { error: 'Please provide a `novel_id` when using this command in the library channel.' };
+    }
+
+    if (!novelId) {
+      return { error: 'Could not determine which novel to read. Please provide a `novel_id`.' };
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      return { error: `Novel not found: ${novelId}` };
+    }
+
+    return { novelId, state };
+  }
+
+  /**
+   * Handle /novel read_chapter - Read a specific chapter
+   */
+  async handleReadChapter(interaction) {
     const chapterNum = interaction.options.getInteger('chapter');
 
     await interaction.deferReply();
 
-    const state = await this.novelManager.getNovelState(novelId);
-    if (!state) {
-      await interaction.editReply(`Novel not found: ${novelId}`);
+    const result = await this.resolveNovelIdForRead(interaction);
+    if (result.error) {
+      await interaction.editReply(result.error);
       return;
     }
 
-    let content;
-    let title;
+    const { novelId, state } = result;
+    const { metadata, stats } = state;
 
-    if (chapterNum === 0) {
-      // Reading outline
-      if (!state.outline) {
-        await interaction.editReply('No outline exists yet for this novel.');
-        return;
+    // Get chapter
+    const chapter = state.chapters ? state.chapters[chapterNum] : null;
+    if (!chapter) {
+      if (!stats.chaptersWritten || stats.chaptersWritten === 0) {
+        await interaction.editReply('No chapters written yet. Use `/novel write` to generate the first chapter.');
+      } else {
+        await interaction.editReply(`Chapter ${chapterNum} not found. Written chapters: 1-${stats.chaptersWritten}`);
       }
-      title = `📋 Outline: ${state.metadata.title}`;
-      content = state.outline.raw || state.outline.synopsis || JSON.stringify(state.outline, null, 2);
-    } else {
-      // Reading chapter
-      const chapter = state.chapters[chapterNum];
-      if (!chapter) {
-        await interaction.editReply(`Chapter ${chapterNum} not found. Written chapters: 1-${state.stats.chaptersWritten}`);
-        return;
-      }
-      title = `📖 ${state.metadata.title} - Chapter ${chapterNum}`;
-      content = chapter.content || chapter.raw || 'No content available';
+      return;
     }
 
-    // Discord has a 4096 character limit for embed descriptions
-    // Split into multiple embeds if needed
-    const chunks = this.splitContent(content, 4000);
+    const title = `📖 ${metadata.title} - Chapter ${chapterNum}: ${chapter.title || ''}`;
+    const content = chapter.content || chapter.raw || 'No content available';
 
-    const embeds = chunks.map((chunk, i) => {
-      const embed = new EmbedBuilder()
-        .setColor(0x9932cc)
-        .setDescription(chunk);
-
-      if (i === 0) {
-        embed.setTitle(title);
-      }
-      if (i === chunks.length - 1) {
-        embed.setFooter({ text: `Novel ID: ${novelId}` });
-      }
-
-      return embed;
+    await this.sendContentAsEmbeds(interaction, title, content, {
+      footer: `Chapter ${chapterNum}/${stats.chaptersWritten} | Novel ID: ${novelId}`
     });
-
-    // Send first embed as reply, rest as follow-ups
-    await interaction.editReply({ embeds: [embeds[0]] });
-    for (let i = 1; i < embeds.length; i++) {
-      await interaction.followUp({ embeds: [embeds[i]] });
-    }
   }
 
   /**
-   * Handle /novel view - View current outline or chapter in novel channel
+   * Handle /novel read_outline - Read the full outline
    */
-  async handleView(interaction) {
-    let chapterNum = interaction.options.getInteger('chapter');
+  async handleReadOutline(interaction) {
+    await interaction.deferReply();
+
+    const result = await this.resolveNovelIdForRead(interaction);
+    if (result.error) {
+      await interaction.editReply(result.error);
+      return;
+    }
+
+    const { novelId, state } = result;
+    const { metadata } = state;
+
+    if (!state.outline) {
+      await interaction.editReply('No outline exists yet. Use `/novel write` to generate one.');
+      return;
+    }
+
+    const title = `📋 Outline: ${metadata.title}`;
+    const content = state.outline.raw || state.outline.synopsis || JSON.stringify(state.outline, null, 2);
+
+    const footerHints = [];
+    if (!metadata.outlineApproved) {
+      footerHints.push('`/novel approve` to approve | `/novel feedback` to revise');
+    }
+    footerHints.push(`Novel ID: ${novelId}`);
+
+    await this.sendContentAsEmbeds(interaction, title, content, {
+      footer: footerHints.join(' | ')
+    });
+  }
+
+  /**
+   * Handle /novel read_chapter_summary - Read a specific chapter's outline summary
+   */
+  async handleReadChapterSummary(interaction) {
+    const chapterNum = interaction.options.getInteger('chapter');
 
     await interaction.deferReply();
 
-    // Get novel from channel (validated by command gating)
-    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
-    if (!novelId) {
-      await interaction.editReply('Could not find novel for this channel.');
+    const result = await this.resolveNovelIdForRead(interaction);
+    if (result.error) {
+      await interaction.editReply(result.error);
       return;
     }
 
-    const state = await this.novelManager.getNovelState(novelId);
-    if (!state) {
-      await interaction.editReply(`Novel not found: ${novelId}`);
+    const { novelId, state } = result;
+    const { metadata } = state;
+
+    if (!state.outline) {
+      await interaction.editReply('No outline exists yet. Use `/novel write` to generate one.');
       return;
     }
 
+    // Parse chapter summary from outline
+    // The outline format has chapters as numbered list
+    const outlineText = state.outline.raw || '';
+
+    // Try to extract the specific chapter summary
+    // Format: "1. [Chapter Title]: [Summary]" or similar
+    const chapterRegex = new RegExp(`^${chapterNum}\\.\\s*(.+)$`, 'gm');
+    const match = chapterRegex.exec(outlineText);
+
+    if (!match) {
+      // Try alternate format: look in ## CHAPTERS section
+      const chaptersSection = outlineText.match(/## CHAPTERS\s*\n([\s\S]*?)(?=##|$)/i);
+      if (chaptersSection) {
+        const lines = chaptersSection[1].split('\n');
+        const chapterLine = lines.find(l => l.trim().startsWith(`${chapterNum}.`));
+        if (chapterLine) {
+          const title = `📋 Chapter ${chapterNum} Summary`;
+          await this.sendContentAsEmbeds(interaction, title, chapterLine.trim(), {
+            footer: `From outline | Novel ID: ${novelId}`
+          });
+          return;
+        }
+      }
+      await interaction.editReply(`Chapter ${chapterNum} summary not found in outline.`);
+      return;
+    }
+
+    const title = `📋 Chapter ${chapterNum} Summary`;
+    await this.sendContentAsEmbeds(interaction, title, match[1].trim(), {
+      footer: `From outline | Novel ID: ${novelId}`
+    });
+  }
+
+  /**
+   * Handle /novel read_section - Read a range of chapters
+   */
+  async handleReadSection(interaction) {
+    const fromChapter = interaction.options.getInteger('from');
+    const toChapter = interaction.options.getInteger('to');
+
+    await interaction.deferReply();
+
+    if (fromChapter > toChapter) {
+      await interaction.editReply('`from` chapter must be less than or equal to `to` chapter.');
+      return;
+    }
+
+    if (toChapter - fromChapter > 10) {
+      await interaction.editReply('Please request at most 10 chapters at a time to avoid message limits.');
+      return;
+    }
+
+    const result = await this.resolveNovelIdForRead(interaction);
+    if (result.error) {
+      await interaction.editReply(result.error);
+      return;
+    }
+
+    const { novelId, state } = result;
     const { metadata, stats } = state;
 
-    // If no chapter specified, determine what to show
-    if (chapterNum === null || chapterNum === undefined) {
-      // If outline not approved, show outline
-      if (!metadata.outlineApproved) {
-        chapterNum = 0;
-      } else {
-        // Show current/latest chapter
-        chapterNum = stats.chaptersWritten || metadata.currentChapter || 0;
+    if (!stats.chaptersWritten || stats.chaptersWritten === 0) {
+      await interaction.editReply('No chapters written yet.');
+      return;
+    }
+
+    // Collect all chapters in range
+    const chaptersContent = [];
+    for (let i = fromChapter; i <= toChapter; i++) {
+      const chapter = state.chapters ? state.chapters[i] : null;
+      if (chapter) {
+        const chapterTitle = chapter.title || `Chapter ${i}`;
+        const content = chapter.content || chapter.raw || '';
+        chaptersContent.push(`# Chapter ${i}: ${chapterTitle}\n\n${content}`);
       }
     }
 
-    let content;
-    let title;
-
-    if (chapterNum === 0) {
-      // Viewing outline
-      if (!state.outline) {
-        await interaction.editReply('No outline exists yet. Use `/novel write` to generate one.');
-        return;
-      }
-      title = `📋 Outline: ${metadata.title}`;
-      content = state.outline.raw || state.outline.synopsis || JSON.stringify(state.outline, null, 2);
-    } else {
-      // Viewing chapter
-      const chapter = state.chapters ? state.chapters[chapterNum] : null;
-      if (!chapter) {
-        if (stats.chaptersWritten === 0) {
-          await interaction.editReply('No chapters written yet. Use `/novel write` to generate the first chapter.');
-        } else {
-          await interaction.editReply(`Chapter ${chapterNum} not found. Written chapters: 1-${stats.chaptersWritten}`);
-        }
-        return;
-      }
-      title = `📖 Chapter ${chapterNum}: ${chapter.title || ''}`;
-      content = chapter.content || chapter.raw || 'No content available';
+    if (chaptersContent.length === 0) {
+      await interaction.editReply(`No chapters found in range ${fromChapter}-${toChapter}. Written chapters: 1-${stats.chaptersWritten}`);
+      return;
     }
 
-    // Discord has a 4096 character limit for embed descriptions
-    // Split into multiple embeds if needed
+    const title = `📖 ${metadata.title} - Chapters ${fromChapter}-${toChapter}`;
+    const fullContent = chaptersContent.join('\n\n---\n\n');
+
+    await this.sendContentAsEmbeds(interaction, title, fullContent, {
+      footer: `${chaptersContent.length} chapters | Novel ID: ${novelId}`
+    });
+  }
+
+  /**
+   * Handle /novel read_all - Read the entire novel
+   */
+  async handleReadAll(interaction) {
+    await interaction.deferReply();
+
+    const result = await this.resolveNovelIdForRead(interaction);
+    if (result.error) {
+      await interaction.editReply(result.error);
+      return;
+    }
+
+    const { novelId, state } = result;
+    const { metadata, stats } = state;
+
+    if (!stats.chaptersWritten || stats.chaptersWritten === 0) {
+      await interaction.editReply('No chapters written yet. Use `/novel write` to generate chapters.');
+      return;
+    }
+
+    // Warn if too many chapters
+    if (stats.chaptersWritten > 20) {
+      await interaction.editReply(
+        `This novel has ${stats.chaptersWritten} chapters which would generate too many messages. ` +
+        `Please use \`/novel read_section from:1 to:10\` to read in parts.`
+      );
+      return;
+    }
+
+    // Collect all chapters
+    const chaptersContent = [];
+    for (let i = 1; i <= stats.chaptersWritten; i++) {
+      const chapter = state.chapters ? state.chapters[i] : null;
+      if (chapter) {
+        const chapterTitle = chapter.title || `Chapter ${i}`;
+        const content = chapter.content || chapter.raw || '';
+        chaptersContent.push(`# Chapter ${i}: ${chapterTitle}\n\n${content}`);
+      }
+    }
+
+    const title = `📖 ${metadata.title} - Complete Novel`;
+    const fullContent = chaptersContent.join('\n\n---\n\n');
+
+    await this.sendContentAsEmbeds(interaction, title, fullContent, {
+      footer: `${chaptersContent.length} chapters | Novel ID: ${novelId}`
+    });
+  }
+
+  /**
+   * Helper: Send content split into multiple embeds
+   */
+  async sendContentAsEmbeds(interaction, title, content, options = {}) {
     const chunks = this.splitContent(content, 4000);
 
     const embeds = chunks.map((chunk, i) => {
@@ -1397,15 +1594,8 @@ class IluvatarBot {
       if (i === 0) {
         embed.setTitle(title);
       }
-      if (i === chunks.length - 1) {
-        // Add navigation hints
-        const hints = [];
-        if (chapterNum === 0 && !metadata.outlineApproved) {
-          hints.push('`/novel approve` to approve | `/novel feedback` to revise');
-        } else if (chapterNum > 0) {
-          hints.push(`Chapter ${chapterNum}/${stats.chaptersWritten}`);
-        }
-        embed.setFooter({ text: hints.join(' | ') || metadata.title });
+      if (i === chunks.length - 1 && options.footer) {
+        embed.setFooter({ text: options.footer });
       }
 
       return embed;
