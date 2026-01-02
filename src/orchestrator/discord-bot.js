@@ -1336,17 +1336,22 @@ class IluvatarBot {
     const title = metadata.title;
 
     // Delete the novel channel if it exists
+    console.log(`[Discord] Delete: metadata.discordChannelId = ${metadata.discordChannelId}`);
     if (metadata.discordChannelId) {
       try {
         const channel = await this.client.channels.fetch(metadata.discordChannelId);
         if (channel) {
           await channel.delete(`Novel "${title}" deleted by ${interaction.user.tag}`);
           console.log(`[Discord] Deleted channel for novel ${novelId}`);
+        } else {
+          console.log(`[Discord] Channel not found: ${metadata.discordChannelId}`);
         }
       } catch (err) {
-        console.error(`[Discord] Failed to delete channel:`, err);
+        console.error(`[Discord] Failed to delete channel:`, err.message);
         // Continue with novel deletion even if channel deletion fails
       }
+    } else {
+      console.log(`[Discord] No channel ID stored for novel ${novelId}`);
     }
 
     // Delete the novel from storage
