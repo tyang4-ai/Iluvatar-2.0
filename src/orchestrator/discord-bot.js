@@ -12,6 +12,7 @@
  *   /novel create   - Start a new novel project (creates dedicated channel)
  *   /novel list     - List all novels (library only)
  *   /novel read     - Read a chapter from any novel (library only)
+ *   /novel view     - View current outline or chapter (novel channel only)
  *   /novel status   - Check novel status
  *   /novel write    - Generate next chapter (requires approved outline)
  *   /novel feedback - Send feedback to revise the current outline/chapter
@@ -22,6 +23,7 @@
  *   /novel bible    - View the story bible
  *   /novel pause    - Pause generation
  *   /novel resume   - Resume generation
+ *   /novel delete   - Delete a novel and its channel (library only)
  */
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, ChannelType, PermissionFlagsBits } = require('discord.js');
@@ -189,6 +191,14 @@ class IluvatarBot {
                 .setRequired(true))
         )
         .addSubcommand(sub =>
+          sub.setName('view')
+            .setDescription('View current outline or chapter (use in novel channel)')
+            .addIntegerOption(opt =>
+              opt.setName('chapter')
+                .setDescription('Chapter number (0 = outline, empty = current)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
           sub.setName('delete')
             .setDescription('Delete a novel and its channel (library only)')
             .addStringOption(opt =>
@@ -337,7 +347,7 @@ class IluvatarBot {
     }
 
     // Commands only allowed in novel channels
-    const novelOnlyCommands = ['write', 'feedback', 'approve', 'critique', 'recall', 'cascade', 'skip_cascade', 'pause', 'resume'];
+    const novelOnlyCommands = ['write', 'feedback', 'approve', 'critique', 'recall', 'cascade', 'skip_cascade', 'pause', 'resume', 'view'];
     if (novelOnlyCommands.includes(subcommand)) {
       if (channelType !== 'novel') {
         if (channelType === 'library') {
@@ -423,6 +433,9 @@ class IluvatarBot {
             break;
           case 'read':
             await this.handleRead(interaction);
+            break;
+          case 'view':
+            await this.handleView(interaction);
             break;
           case 'delete':
             await this.handleDelete(interaction);
@@ -1300,6 +1313,99 @@ class IluvatarBot {
       }
       if (i === chunks.length - 1) {
         embed.setFooter({ text: `Novel ID: ${novelId}` });
+      }
+
+      return embed;
+    });
+
+    // Send first embed as reply, rest as follow-ups
+    await interaction.editReply({ embeds: [embeds[0]] });
+    for (let i = 1; i < embeds.length; i++) {
+      await interaction.followUp({ embeds: [embeds[i]] });
+    }
+  }
+
+  /**
+   * Handle /novel view - View current outline or chapter in novel channel
+   */
+  async handleView(interaction) {
+    let chapterNum = interaction.options.getInteger('chapter');
+
+    await interaction.deferReply();
+
+    // Get novel from channel (validated by command gating)
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    if (!novelId) {
+      await interaction.editReply('Could not find novel for this channel.');
+      return;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const { metadata, stats } = state;
+
+    // If no chapter specified, determine what to show
+    if (chapterNum === null || chapterNum === undefined) {
+      // If outline not approved, show outline
+      if (!metadata.outlineApproved) {
+        chapterNum = 0;
+      } else {
+        // Show current/latest chapter
+        chapterNum = stats.chaptersWritten || metadata.currentChapter || 0;
+      }
+    }
+
+    let content;
+    let title;
+
+    if (chapterNum === 0) {
+      // Viewing outline
+      if (!state.outline) {
+        await interaction.editReply('No outline exists yet. Use `/novel write` to generate one.');
+        return;
+      }
+      title = `📋 Outline: ${metadata.title}`;
+      content = state.outline.raw || state.outline.synopsis || JSON.stringify(state.outline, null, 2);
+    } else {
+      // Viewing chapter
+      const chapter = state.chapters ? state.chapters[chapterNum] : null;
+      if (!chapter) {
+        if (stats.chaptersWritten === 0) {
+          await interaction.editReply('No chapters written yet. Use `/novel write` to generate the first chapter.');
+        } else {
+          await interaction.editReply(`Chapter ${chapterNum} not found. Written chapters: 1-${stats.chaptersWritten}`);
+        }
+        return;
+      }
+      title = `📖 Chapter ${chapterNum}: ${chapter.title || ''}`;
+      content = chapter.content || chapter.raw || 'No content available';
+    }
+
+    // Discord has a 4096 character limit for embed descriptions
+    // Split into multiple embeds if needed
+    const chunks = this.splitContent(content, 4000);
+
+    const embeds = chunks.map((chunk, i) => {
+      const embed = new EmbedBuilder()
+        .setColor(0x9932cc)
+        .setDescription(chunk);
+
+      if (i === 0) {
+        embed.setTitle(title);
+      }
+      if (i === chunks.length - 1) {
+        // Add navigation hints
+        const hints = [];
+        if (chapterNum === 0 && !metadata.outlineApproved) {
+          hints.push('`/novel approve` to approve | `/novel feedback` to revise');
+        } else if (chapterNum > 0) {
+          hints.push(`Chapter ${chapterNum}/${stats.chaptersWritten}`);
+        }
+        embed.setFooter({ text: hints.join(' | ') || metadata.title });
       }
 
       return embed;
