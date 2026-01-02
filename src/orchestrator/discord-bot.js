@@ -4,16 +4,24 @@
  * Provides slash commands for novel management with human-in-the-loop.
  * Triggers N8N workflows and reports results back to Discord.
  *
+ * Channel Types:
+ *   - Library channel: /novel create, /novel list, /novel read
+ *   - Novel channels: All other commands (context-aware, no novel_id needed)
+ *
  * Commands:
- *   /novel create   - Start a new novel project, generates outline
- *   /novel feedback - Send feedback to revise the current outline/chapter
- *   /novel approve  - Approve current outline, ready for writing
+ *   /novel create   - Start a new novel project (creates dedicated channel)
+ *   /novel list     - List all novels (library only)
+ *   /novel read     - Read a chapter from any novel (library only)
+ *   /novel status   - Check novel status
  *   /novel write    - Generate next chapter (requires approved outline)
+ *   /novel feedback - Send feedback to revise the current outline/chapter
+ *   /novel approve  - Approve current outline/chapter
  *   /novel critique - Get Elrond's evaluation of the latest chapter
- *   /novel status   - Check current novel state
+ *   /novel recall   - Go back to revise an earlier chapter
+ *   /novel cascade  - Regenerate chapters after recall
+ *   /novel bible    - View the story bible
  *   /novel pause    - Pause generation
  *   /novel resume   - Resume generation
- *   /novel list     - List all novels
  */
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, ChannelType, PermissionFlagsBits } = require('discord.js');
@@ -152,6 +160,54 @@ class IluvatarBot {
                 .setDescription('Chapter number (leave empty for latest)')
                 .setRequired(false))
         )
+        .addSubcommand(sub =>
+          sub.setName('recall')
+            .setDescription('Go back to revise an earlier chapter')
+            .addIntegerOption(opt =>
+              opt.setName('chapter')
+                .setDescription('Chapter to revise (0 = outline)')
+                .setRequired(true))
+        )
+        .addSubcommand(sub =>
+          sub.setName('cascade')
+            .setDescription('Regenerate all chapters after the recalled one')
+        )
+        .addSubcommand(sub =>
+          sub.setName('skip_cascade')
+            .setDescription('Keep later chapters as-is after recall revision')
+        )
+        .addSubcommand(sub =>
+          sub.setName('bible')
+            .setDescription('View the story bible')
+            .addStringOption(opt =>
+              opt.setName('section')
+                .setDescription('Bible section to view')
+                .setRequired(false)
+                .addChoices(
+                  { name: 'Characters', value: 'characters' },
+                  { name: 'Relationships', value: 'relationships' },
+                  { name: 'Plot Threads', value: 'plotThreads' },
+                  { name: 'World Facts', value: 'worldFacts' },
+                  { name: 'Timeline', value: 'timeline' },
+                  { name: 'Chekhov\'s Guns', value: 'chekhovs' }
+                ))
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID (required in library channel)')
+                .setRequired(false))
+        )
+        .addSubcommand(sub =>
+          sub.setName('read')
+            .setDescription('Read a chapter from any novel (library only)')
+            .addStringOption(opt =>
+              opt.setName('novel_id')
+                .setDescription('Novel ID')
+                .setRequired(true))
+            .addIntegerOption(opt =>
+              opt.setName('chapter')
+                .setDescription('Chapter number (0 = outline)')
+                .setRequired(true))
+        )
         .toJSON()
     ];
   }
@@ -228,6 +284,21 @@ class IluvatarBot {
             break;
           case 'critique':
             await this.handleCritique(interaction);
+            break;
+          case 'recall':
+            await this.handleRecall(interaction);
+            break;
+          case 'cascade':
+            await this.handleCascade(interaction, true);
+            break;
+          case 'skip_cascade':
+            await this.handleCascade(interaction, false);
+            break;
+          case 'bible':
+            await this.handleBible(interaction);
+            break;
+          case 'read':
+            await this.handleRead(interaction);
             break;
           default:
             await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -476,13 +547,29 @@ class IluvatarBot {
       nextStep = `Frodo will write chapter ${chapterNum}`;
     }
 
+    // Get the channel to post results to (novel's dedicated channel or current channel)
+    const callbackChannelId = metadata.discordChannelId || interaction.channelId;
+
+    // Get bible context for the chapter (if bible retriever is available)
+    let bibleContext = null;
+    if (this.novelManager.bibleRetriever && action !== 'outline') {
+      try {
+        const relevantBible = await this.novelManager.bibleRetriever.getRelevantBible(novelId, chapterNum);
+        bibleContext = this.novelManager.bibleRetriever.formatForPrompt(relevantBible);
+      } catch (err) {
+        console.error('[Discord] Failed to get bible context:', err);
+        // Continue without bible context
+      }
+    }
+
     // Trigger N8N workflow
     await this.triggerN8N({
       action,
       novelId,
       metadata,
-      chapterNum
-    });
+      chapterNum,
+      bibleContext
+    }, callbackChannelId);
 
     const embed = new EmbedBuilder()
       .setTitle('✍️ Generation Started')
@@ -492,7 +579,7 @@ class IluvatarBot {
         { name: 'Action', value: action, inline: true },
         { name: 'Next Step', value: nextStep, inline: false }
       )
-      .setFooter({ text: 'Check back with /novel status for updates' });
+      .setFooter({ text: 'Results will be posted to this channel when ready' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -606,14 +693,29 @@ class IluvatarBot {
       timestamp: new Date().toISOString()
     });
 
+    // Get the channel to post results to (novel's dedicated channel or current channel)
+    const callbackChannelId = metadata.discordChannelId || interaction.channelId;
+
+    // Get bible context for revisions (if bible retriever is available)
+    let bibleContext = null;
+    if (this.novelManager.bibleRetriever && action === 'revise_chapter') {
+      try {
+        const relevantBible = await this.novelManager.bibleRetriever.getRelevantBible(novelId, metadata.currentChapter);
+        bibleContext = this.novelManager.bibleRetriever.formatForPrompt(relevantBible);
+      } catch (err) {
+        console.error('[Discord] Failed to get bible context:', err);
+      }
+    }
+
     // Trigger N8N to process the revision
     await this.triggerN8N({
       action,
       novelId,
       metadata,
       feedback: comment,
-      chapterNum: metadata.currentChapter
-    });
+      chapterNum: metadata.currentChapter,
+      bibleContext
+    }, callbackChannelId);
 
     const embed = new EmbedBuilder()
       .setTitle('💬 Feedback Submitted')
@@ -623,12 +725,9 @@ class IluvatarBot {
         { name: 'Target', value: feedbackTarget, inline: true },
         { name: 'Feedback', value: comment.substring(0, 200) + (comment.length > 200 ? '...' : ''), inline: false }
       )
-      .setFooter({ text: 'Revision in progress. Check /novel status for updates.' });
+      .setFooter({ text: 'Revision in progress. Results will be posted when ready.' });
 
     await interaction.editReply({ embeds: [embed] });
-
-    // Also post to the novel's channel
-    await this.sendToNovelChannel(novelId, embed);
   }
 
   /**
@@ -734,13 +833,28 @@ class IluvatarBot {
       return;
     }
 
+    // Get the channel to post results to (novel's dedicated channel or current channel)
+    const callbackChannelId = metadata.discordChannelId || interaction.channelId;
+
+    // Get bible context for Elrond to check consistency
+    let bibleContext = null;
+    if (this.novelManager.bibleRetriever) {
+      try {
+        const relevantBible = await this.novelManager.bibleRetriever.getRelevantBible(novelId, chapterNum);
+        bibleContext = this.novelManager.bibleRetriever.formatForPrompt(relevantBible);
+      } catch (err) {
+        console.error('[Discord] Failed to get bible context:', err);
+      }
+    }
+
     // Trigger N8N to get critique
     await this.triggerN8N({
       action: 'critique',
       novelId,
       metadata,
-      chapterNum
-    });
+      chapterNum,
+      bibleContext
+    }, callbackChannelId);
 
     const embed = new EmbedBuilder()
       .setTitle('🔍 Critique Requested')
@@ -749,32 +863,401 @@ class IluvatarBot {
         { name: 'Novel', value: metadata.title, inline: true },
         { name: 'Chapter', value: String(chapterNum), inline: true }
       )
-      .setFooter({ text: 'Elrond is evaluating. Results will be posted to the novel channel.' });
+      .setFooter({ text: 'Elrond is evaluating. Results will be posted when ready.' });
 
     await interaction.editReply({ embeds: [embed] });
   }
 
   /**
-   * Trigger N8N workflow via webhook
+   * Resolve novel context from channel or provided ID
+   * For novel channels, auto-resolves the novel ID
+   *
+   * @param {Object} interaction - Discord interaction
+   * @param {string|null} providedId - Novel ID from command option (optional)
+   * @returns {Promise<{novelId: string, state: Object}|null>}
    */
-  async triggerN8N(payload) {
+  async resolveNovelContext(interaction, providedId = null) {
+    let novelId = providedId;
+
+    // If no ID provided, try to get from channel mapping
+    if (!novelId) {
+      novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    }
+
+    // If still no ID, get the latest novel
+    if (!novelId) {
+      const novels = await this.novelManager.listNovels();
+      if (novels.length === 0) {
+        return null;
+      }
+      novelId = novels[0].id;
+    }
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      return null;
+    }
+
+    return { novelId, state };
+  }
+
+  /**
+   * Handle /novel recall - Go back to revise an earlier chapter
+   */
+  async handleRecall(interaction) {
+    const chapterNum = interaction.options.getInteger('chapter');
+
+    await interaction.deferReply();
+
+    // Get novel from channel
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    if (!novelId) {
+      await interaction.editReply('This command must be used in a novel channel.');
+      return;
+    }
+
+    try {
+      const result = await this.novelManager.recallChapter(novelId, chapterNum);
+
+      const embed = new EmbedBuilder()
+        .setTitle(`🔙 Recalled ${chapterNum === 0 ? 'Outline' : `Chapter ${chapterNum}`}`)
+        .setColor(0xffaa00)
+        .setDescription(result.message);
+
+      if (result.cascadePending.length > 0) {
+        embed.addFields(
+          { name: 'Affected Chapters', value: result.cascadePending.join(', '), inline: true },
+          { name: 'Next Steps', value: 'Use `/novel feedback` to submit revisions.\nThen use `/novel cascade` to regenerate affected chapters, or `/novel skip_cascade` to keep them as-is.', inline: false }
+        );
+      } else {
+        embed.addFields(
+          { name: 'Next Step', value: 'Use `/novel feedback` to submit your revisions.', inline: false }
+        );
+      }
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      await interaction.editReply(`Error: ${err.message}`);
+    }
+  }
+
+  /**
+   * Handle /novel cascade or /novel skip_cascade
+   */
+  async handleCascade(interaction, doCascade) {
+    await interaction.deferReply();
+
+    // Get novel from channel
+    const novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    if (!novelId) {
+      await interaction.editReply('This command must be used in a novel channel.');
+      return;
+    }
+
+    try {
+      await this.novelManager.completeRecall(novelId, doCascade);
+
+      const state = await this.novelManager.getNovelState(novelId);
+      const { metadata } = state;
+
+      if (doCascade) {
+        const embed = new EmbedBuilder()
+          .setTitle('🔄 Cascade Started')
+          .setColor(0x0099ff)
+          .setDescription(`Regenerating chapters starting from ${metadata.currentChapter + 1}`)
+          .addFields(
+            { name: 'Novel', value: metadata.title, inline: true },
+            { name: 'Next Step', value: 'Use `/novel write` to generate each chapter in sequence.', inline: false }
+          );
+
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        const embed = new EmbedBuilder()
+          .setTitle('⏭️ Cascade Skipped')
+          .setColor(0x00ff00)
+          .setDescription('Later chapters kept as-is. Revision complete.')
+          .addFields(
+            { name: 'Novel', value: metadata.title, inline: true },
+            { name: 'Current Chapter', value: String(metadata.currentChapter), inline: true }
+          );
+
+        await interaction.editReply({ embeds: [embed] });
+      }
+    } catch (err) {
+      await interaction.editReply(`Error: ${err.message}`);
+    }
+  }
+
+  /**
+   * Handle /novel bible - View the story bible
+   */
+  async handleBible(interaction) {
+    let novelId = interaction.options.getString('novel_id');
+    const section = interaction.options.getString('section');
+
+    await interaction.deferReply();
+
+    // Try to get novel from channel if not provided
+    if (!novelId) {
+      novelId = await this.novelManager.getNovelByChannel(interaction.channelId);
+    }
+
+    // Still no ID? Error
+    if (!novelId) {
+      await interaction.editReply('Please provide a novel_id or use this command in a novel channel.');
+      return;
+    }
+
+    const bible = await this.novelManager.getStoryBible(novelId);
+    const metadata = await this.novelManager.getNovel(novelId);
+
+    if (!metadata) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📚 Story Bible: ${metadata.title}`)
+      .setColor(0x9932cc);
+
+    // If specific section requested, show just that
+    if (section) {
+      switch (section) {
+        case 'characters':
+          const chars = Object.values(bible.characters || {});
+          if (chars.length === 0) {
+            embed.setDescription('No characters yet.');
+          } else {
+            for (const char of chars.slice(0, 10)) {
+              embed.addFields({
+                name: `${char.name}${char.status ? ` (${char.status})` : ''}`,
+                value: char.description || char.traits?.join(', ') || 'No description',
+                inline: true
+              });
+            }
+            if (chars.length > 10) {
+              embed.setFooter({ text: `...and ${chars.length - 10} more characters` });
+            }
+          }
+          break;
+
+        case 'relationships':
+          const rels = bible.relationships || [];
+          if (rels.length === 0) {
+            embed.setDescription('No relationships yet.');
+          } else {
+            const relText = rels.slice(0, 15).map(r =>
+              `${r.from} → ${r.to}: ${r.type}`
+            ).join('\n');
+            embed.setDescription(relText);
+          }
+          break;
+
+        case 'plotThreads':
+          const threads = bible.plotThreads || [];
+          if (threads.length === 0) {
+            embed.setDescription('No plot threads yet.');
+          } else {
+            for (const thread of threads.slice(0, 10)) {
+              embed.addFields({
+                name: `${thread.title}${thread.resolved ? ' ✓' : ''}`,
+                value: thread.foreshadowing?.length
+                  ? `Foreshadowing: ${thread.foreshadowing.length} hints`
+                  : 'No foreshadowing yet',
+                inline: true
+              });
+            }
+          }
+          break;
+
+        case 'worldFacts':
+          const facts = bible.worldFacts || [];
+          if (facts.length === 0) {
+            embed.setDescription('No world facts yet.');
+          } else {
+            const factText = facts.slice(0, 15).map(f =>
+              `[${f.category || 'general'}] ${f.fact}`
+            ).join('\n');
+            embed.setDescription(factText);
+          }
+          break;
+
+        case 'timeline':
+          const events = bible.timeline || [];
+          if (events.length === 0) {
+            embed.setDescription('No timeline events yet.');
+          } else {
+            const timelineText = events.slice(-15).map(e =>
+              `Ch${e.chapter}: ${e.event}`
+            ).join('\n');
+            embed.setDescription(timelineText);
+          }
+          break;
+
+        case 'chekhovs':
+          const guns = bible.chekhovs || [];
+          if (guns.length === 0) {
+            embed.setDescription('No Chekhov\'s guns yet.');
+          } else {
+            for (const gun of guns.slice(0, 10)) {
+              embed.addFields({
+                name: `${gun.item}${gun.payoff ? ` ✓ (ch${gun.payoff})` : ''}`,
+                value: `Introduced: ch${gun.introduced}${gun.notes ? ` | ${gun.notes}` : ''}`,
+                inline: true
+              });
+            }
+          }
+          break;
+      }
+    } else {
+      // Show overview
+      embed.setDescription('Use `/novel bible section:<name>` to view a specific section.');
+      embed.addFields(
+        { name: 'Characters', value: String(Object.keys(bible.characters || {}).length), inline: true },
+        { name: 'Relationships', value: String((bible.relationships || []).length), inline: true },
+        { name: 'Plot Threads', value: String((bible.plotThreads || []).length), inline: true },
+        { name: 'World Facts', value: String((bible.worldFacts || []).length), inline: true },
+        { name: 'Timeline Events', value: String((bible.timeline || []).length), inline: true },
+        { name: 'Chekhov\'s Guns', value: String((bible.chekhovs || []).length), inline: true }
+      );
+    }
+
+    await interaction.editReply({ embeds: [embed] });
+  }
+
+  /**
+   * Handle /novel read - Read a chapter from any novel
+   */
+  async handleRead(interaction) {
+    const novelId = interaction.options.getString('novel_id');
+    const chapterNum = interaction.options.getInteger('chapter');
+
+    await interaction.deferReply();
+
+    const state = await this.novelManager.getNovelState(novelId);
+    if (!state) {
+      await interaction.editReply(`Novel not found: ${novelId}`);
+      return;
+    }
+
+    let content;
+    let title;
+
+    if (chapterNum === 0) {
+      // Reading outline
+      if (!state.outline) {
+        await interaction.editReply('No outline exists yet for this novel.');
+        return;
+      }
+      title = `📋 Outline: ${state.metadata.title}`;
+      content = state.outline.raw || state.outline.synopsis || JSON.stringify(state.outline, null, 2);
+    } else {
+      // Reading chapter
+      const chapter = state.chapters[chapterNum];
+      if (!chapter) {
+        await interaction.editReply(`Chapter ${chapterNum} not found. Written chapters: 1-${state.stats.chaptersWritten}`);
+        return;
+      }
+      title = `📖 ${state.metadata.title} - Chapter ${chapterNum}`;
+      content = chapter.content || chapter.raw || 'No content available';
+    }
+
+    // Discord has a 4096 character limit for embed descriptions
+    // Split into multiple embeds if needed
+    const chunks = this.splitContent(content, 4000);
+
+    const embeds = chunks.map((chunk, i) => {
+      const embed = new EmbedBuilder()
+        .setColor(0x9932cc)
+        .setDescription(chunk);
+
+      if (i === 0) {
+        embed.setTitle(title);
+      }
+      if (i === chunks.length - 1) {
+        embed.setFooter({ text: `Novel ID: ${novelId}` });
+      }
+
+      return embed;
+    });
+
+    // Send first embed as reply, rest as follow-ups
+    await interaction.editReply({ embeds: [embeds[0]] });
+    for (let i = 1; i < embeds.length; i++) {
+      await interaction.followUp({ embeds: [embeds[i]] });
+    }
+  }
+
+  /**
+   * Split content into chunks for Discord
+   */
+  splitContent(content, maxLength) {
+    if (content.length <= maxLength) {
+      return [content];
+    }
+
+    const chunks = [];
+    let remaining = content;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLength) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Find a good break point (paragraph or sentence)
+      let breakPoint = remaining.lastIndexOf('\n\n', maxLength);
+      if (breakPoint < maxLength / 2) {
+        breakPoint = remaining.lastIndexOf('\n', maxLength);
+      }
+      if (breakPoint < maxLength / 2) {
+        breakPoint = remaining.lastIndexOf('. ', maxLength);
+      }
+      if (breakPoint < maxLength / 2) {
+        breakPoint = maxLength;
+      }
+
+      chunks.push(remaining.substring(0, breakPoint));
+      remaining = remaining.substring(breakPoint).trim();
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Trigger N8N workflow via webhook
+   * Includes callback information so N8N can post results to the correct channel
+   *
+   * @param {Object} payload - Webhook payload
+   * @param {string} channelId - Discord channel ID to post results to
+   */
+  async triggerN8N(payload, channelId = null) {
     if (!this.n8nWebhookUrl) {
       console.log('[Discord] N8N webhook not configured, skipping trigger');
       return;
     }
 
+    // Add callback information
+    const fullPayload = {
+      ...payload,
+      callback: {
+        discordChannelId: channelId,
+        botToken: this.token  // N8N can use this to post via Discord API
+      }
+    };
+
     try {
       const response = await fetch(this.n8nWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(fullPayload)
       });
 
       if (!response.ok) {
         throw new Error(`N8N webhook failed: ${response.status}`);
       }
 
-      console.log(`[Discord] Triggered N8N: ${payload.action} for ${payload.novelId}`);
+      console.log(`[Discord] Triggered N8N: ${payload.action} for ${payload.novelId} -> channel ${channelId}`);
     } catch (err) {
       console.error('[Discord] Failed to trigger N8N:', err);
       throw err;

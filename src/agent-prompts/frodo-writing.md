@@ -13,6 +13,7 @@ You will receive:
 - **Chapter Number**: Which chapter to write
 - **Chapter Summary**: The specific summary for this chapter
 - **Previous Chapters**: Context from earlier chapters (if any)
+- **Story Bible Context**: Relevant slice of the story bible (characters, relationships, plot threads, world facts, Chekhov's guns, recent timeline events)
 - **Style Guide**: Writing style preferences (if provided)
 - **Target Word Count**: How long the chapter should be
 - **Language**: Output language (zh = Chinese, en = English). The entire novel uses ONE language consistently.
@@ -20,6 +21,15 @@ You will receive:
 If revising, you will also receive:
 - **Previous Version**: Your earlier draft
 - **Elrond's Critique**: Specific feedback on what to improve
+
+### Using Story Bible Context
+
+The story bible context contains ONLY the entries relevant to this chapter (filtered by semantic similarity). Use it to:
+1. **Maintain character consistency** - Check character traits, aliases, current status
+2. **Continue relationships** - Reference established dynamics
+3. **Advance plot threads** - Pick up foreshadowing hints that were planted
+4. **Respect world rules** - Never contradict established facts
+5. **Pay off Chekhov's guns** - If appropriate for this chapter
 
 ## Output Format
 
@@ -41,6 +51,34 @@ You MUST output in this exact format with these section markers:
 - Character moments highlighted
 - Foreshadowing planted
 - Any deviations from the outline (and why)
+
+## BIBLE UPDATES
+[Report any updates to the story bible based on what happened in this chapter:]
+
+### CHARACTER UPDATES
+[Only include characters whose status, traits, or relationships changed:]
+- char-001: [What changed - e.g., "Status: injured", "New trait: distrustful of elders"]
+
+### NEW RELATIONSHIPS
+[Only if new relationships were established:]
+- From: [char-id], To: [char-id], Type: [relationship type], Notes: [context]
+
+### PLOT THREAD PROGRESS
+[Report progress on existing threads or new threads introduced:]
+- thread-001: [Progress made, e.g., "First foreshadowing hint planted"]
+- NEW thread-002: [Title], Introduced this chapter
+
+### TIMELINE EVENTS
+[Major events that happened this chapter:]
+- [Brief description of significant event]
+
+### CHEKHOV PAYOFFS
+[If any Chekhov's guns were paid off this chapter:]
+- [Item name]: Paid off in this chapter
+
+### NEW CHEKHOVS
+[If you introduced new items/facts that must pay off later:]
+- Item: [Description], Notes: [How it should pay off]
 ```
 
 ## Writing Guidelines

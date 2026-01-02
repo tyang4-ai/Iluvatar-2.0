@@ -25,10 +25,27 @@ const NOVEL_STATUS = {
   PAUSED: 'paused'
 };
 
+// Revision mode constants
+const REVISION_MODE = {
+  NONE: null,
+  ACTIVE: 'active',           // Currently revising a recalled chapter
+  CASCADE_PENDING: 'cascade'  // Waiting for user to decide on cascade
+};
+
 // Default quality settings
 const DEFAULT_CONFIG = {
   passThreshold: 70,      // Minimum score to pass critique (0-100)
   maxRevisions: 3         // Max revision attempts before forcing pass
+};
+
+// Empty story bible template
+const EMPTY_STORY_BIBLE = {
+  characters: {},        // Character profiles indexed by ID
+  relationships: [],     // Relationships between characters
+  plotThreads: [],       // Active plot threads and foreshadowing
+  worldFacts: [],        // Consistent world-building facts
+  timeline: [],          // Major events by chapter
+  chekhovs: []           // Items/facts that must pay off later
 };
 
 class NovelManager {
@@ -74,6 +91,8 @@ class NovelManager {
    * @param {string} config.premise - Brief premise/concept
    * @param {number} config.targetChapters - Target number of chapters
    * @param {number} config.targetWordsPerChapter - Target words per chapter
+   * @param {string} config.discordChannelId - Dedicated Discord channel ID
+   * @param {string} config.discordChannelName - Discord channel name
    * @returns {Promise<Object>} Created novel metadata
    */
   async createNovel(config) {
@@ -93,6 +112,13 @@ class NovelManager {
       status: NOVEL_STATUS.PLANNING,
       currentChapter: 0,
       outlineApproved: false,
+      // Channel mapping
+      discordChannelId: config.discordChannelId || null,
+      discordChannelName: config.discordChannelName || null,
+      // Recall/revision tracking
+      revisionTarget: null,      // Chapter being revised (null = none, 0 = outline)
+      revisionMode: REVISION_MODE.NONE,
+      cascadePending: [],        // Chapters that may need regeneration after recall
       createdAt: now,
       updatedAt: now
     };
@@ -104,6 +130,7 @@ class NovelManager {
     await this.state.set(scope, 'critiques', {});
     await this.state.set(scope, 'revisions', {});
     await this.state.set(scope, 'feedback', []);
+    await this.state.set(scope, 'storyBible', { ...EMPTY_STORY_BIBLE });
 
     // Register in global novel index
     await this.state.writeWithRetry('novel-manager', 'global', async (currentState) => {
@@ -112,10 +139,16 @@ class NovelManager {
         id: novelId,
         title: novel.title,
         status: novel.status,
+        discordChannelId: novel.discordChannelId,
         createdAt: now
       };
       return { novels };
     });
+
+    // Store reverse lookup: channel -> novel
+    if (config.discordChannelId) {
+      await this.state.set('global', `channel:${config.discordChannelId}`, novelId);
+    }
 
     console.log(`[NovelManager] Created novel: ${novelId} - "${novel.title}"`);
     return novel;
@@ -648,10 +681,471 @@ class NovelManager {
     await this.updateStatus(novelId, NOVEL_STATUS.COMPLETED);
     console.log(`[NovelManager] Novel ${novelId} marked as COMPLETED`);
   }
+
+  // ============================================================
+  // CHANNEL MAPPING METHODS
+  // ============================================================
+
+  /**
+   * Get novel ID from Discord channel ID
+   *
+   * @param {string} channelId - Discord channel ID
+   * @returns {Promise<string|null>} Novel ID or null if not a novel channel
+   */
+  async getNovelByChannel(channelId) {
+    return await this.state.get('global', `channel:${channelId}`);
+  }
+
+  /**
+   * Link a Discord channel to a novel
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} channelId - Discord channel ID
+   * @param {string} channelName - Discord channel name
+   */
+  async linkChannel(novelId, channelId, channelName) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      metadata.discordChannelId = channelId;
+      metadata.discordChannelName = channelName;
+      metadata.updatedAt = new Date().toISOString();
+
+      return { metadata };
+    });
+
+    // Store reverse lookup
+    await this.state.set('global', `channel:${channelId}`, novelId);
+
+    // Update global index
+    await this.state.writeWithRetry('novel-manager', 'global', async (currentState) => {
+      const novels = currentState.novels || {};
+      if (novels[novelId]) {
+        novels[novelId].discordChannelId = channelId;
+      }
+      return { novels };
+    });
+
+    console.log(`[NovelManager] Linked channel ${channelName} to novel ${novelId}`);
+  }
+
+  // ============================================================
+  // RECALL / REVISION METHODS
+  // ============================================================
+
+  /**
+   * Recall a chapter for revision (go back to edit an earlier chapter)
+   *
+   * @param {string} novelId - Novel ID
+   * @param {number} chapterNum - Chapter to recall (0 = outline)
+   * @returns {Promise<Object>} Recall result with chapter content
+   */
+  async recallChapter(novelId, chapterNum) {
+    const scope = this.getScope(novelId);
+    const state = await this.getNovelState(novelId);
+
+    if (!state) {
+      throw new Error(`Novel not found: ${novelId}`);
+    }
+
+    // Validate chapter exists
+    if (chapterNum === 0) {
+      if (!state.outline) {
+        throw new Error('No outline to recall');
+      }
+    } else if (!state.chapters[chapterNum]) {
+      throw new Error(`Chapter ${chapterNum} not found`);
+    }
+
+    // Calculate which chapters would need cascade
+    const cascadePending = [];
+    if (chapterNum < state.metadata.currentChapter) {
+      for (let i = chapterNum + 1; i <= state.metadata.currentChapter; i++) {
+        if (state.chapters[i]) {
+          cascadePending.push(i);
+        }
+      }
+    }
+
+    // Update metadata with recall state
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      metadata.revisionTarget = chapterNum;
+      metadata.revisionMode = REVISION_MODE.ACTIVE;
+      metadata.cascadePending = cascadePending;
+      metadata.previousChapter = metadata.currentChapter; // Save where we were
+      metadata.status = NOVEL_STATUS.REVISING;
+      metadata.updatedAt = new Date().toISOString();
+      return { metadata };
+    });
+
+    console.log(`[NovelManager] Recalled ${chapterNum === 0 ? 'outline' : `chapter ${chapterNum}`} for ${novelId}`);
+
+    return {
+      novelId,
+      target: chapterNum,
+      content: chapterNum === 0 ? state.outline : state.chapters[chapterNum],
+      cascadePending,
+      message: cascadePending.length > 0
+        ? `Recalled ${chapterNum === 0 ? 'outline' : `chapter ${chapterNum}`}. After revision, ${cascadePending.length} chapter(s) may need regeneration.`
+        : `Recalled ${chapterNum === 0 ? 'outline' : `chapter ${chapterNum}`} for revision.`
+    };
+  }
+
+  /**
+   * Complete recall revision and decide on cascade
+   *
+   * @param {string} novelId - Novel ID
+   * @param {boolean} doCascade - Whether to regenerate affected chapters
+   */
+  async completeRecall(novelId, doCascade = false) {
+    const scope = this.getScope(novelId);
+    const novel = await this.getNovel(novelId);
+
+    if (!novel) {
+      throw new Error(`Novel not found: ${novelId}`);
+    }
+
+    if (novel.revisionMode !== REVISION_MODE.ACTIVE) {
+      throw new Error('No active recall to complete');
+    }
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+
+      if (doCascade && metadata.cascadePending.length > 0) {
+        // Set up for cascade regeneration
+        metadata.revisionMode = REVISION_MODE.CASCADE_PENDING;
+        metadata.currentChapter = metadata.revisionTarget; // Reset to revision point
+        metadata.status = NOVEL_STATUS.WRITING;
+      } else {
+        // No cascade, just return to where we were
+        metadata.revisionTarget = null;
+        metadata.revisionMode = REVISION_MODE.NONE;
+        metadata.cascadePending = [];
+        metadata.currentChapter = metadata.previousChapter || metadata.currentChapter;
+        metadata.status = NOVEL_STATUS.WRITING;
+      }
+
+      delete metadata.previousChapter;
+      metadata.updatedAt = new Date().toISOString();
+      return { metadata };
+    });
+
+    console.log(`[NovelManager] Completed recall for ${novelId}, cascade: ${doCascade}`);
+  }
+
+  /**
+   * Mark a cascade chapter as regenerated
+   *
+   * @param {string} novelId - Novel ID
+   * @param {number} chapterNum - Chapter that was regenerated
+   */
+  async markCascadeComplete(novelId, chapterNum) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+
+      // Remove from pending
+      metadata.cascadePending = metadata.cascadePending.filter(c => c !== chapterNum);
+
+      // If all cascade done, clear revision mode
+      if (metadata.cascadePending.length === 0) {
+        metadata.revisionMode = REVISION_MODE.NONE;
+        metadata.revisionTarget = null;
+      }
+
+      metadata.updatedAt = new Date().toISOString();
+      return { metadata };
+    });
+  }
+
+  // ============================================================
+  // STORY BIBLE METHODS
+  // ============================================================
+
+  /**
+   * Get the story bible for a novel
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Object>} Story bible
+   */
+  async getStoryBible(novelId) {
+    const scope = this.getScope(novelId);
+    const bible = await this.state.get(scope, 'storyBible');
+    return bible || { ...EMPTY_STORY_BIBLE };
+  }
+
+  /**
+   * Add or update a character in the story bible
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} character - Character data
+   */
+  async upsertCharacter(novelId, character) {
+    const scope = this.getScope(novelId);
+    const charId = character.id || `char-${Date.now()}`;
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.characters[charId] = {
+        ...character,
+        id: charId,
+        updatedAt: new Date().toISOString()
+      };
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Updated character ${charId} in story bible for ${novelId}`);
+    return charId;
+  }
+
+  /**
+   * Add a relationship between characters
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} relationship - Relationship data
+   */
+  async addRelationship(novelId, relationship) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.relationships.push({
+        ...relationship,
+        addedAt: new Date().toISOString()
+      });
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added relationship in story bible for ${novelId}`);
+  }
+
+  /**
+   * Add a plot thread / foreshadowing
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} thread - Plot thread data
+   */
+  async addPlotThread(novelId, thread) {
+    const scope = this.getScope(novelId);
+    const threadId = thread.id || `thread-${Date.now()}`;
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.plotThreads.push({
+        ...thread,
+        id: threadId,
+        foreshadowing: thread.foreshadowing || [],
+        resolved: null,
+        addedAt: new Date().toISOString()
+      });
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added plot thread ${threadId} for ${novelId}`);
+    return threadId;
+  }
+
+  /**
+   * Add foreshadowing to an existing plot thread
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} threadId - Plot thread ID
+   * @param {Object} hint - Foreshadowing hint { chapter, hint }
+   */
+  async addForeshadowing(novelId, threadId, hint) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      const thread = bible.plotThreads.find(t => t.id === threadId);
+      if (!thread) {
+        throw new Error(`Plot thread not found: ${threadId}`);
+      }
+      thread.foreshadowing.push(hint);
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added foreshadowing to thread ${threadId} for ${novelId}`);
+  }
+
+  /**
+   * Add a world fact
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} fact - { fact, category }
+   */
+  async addWorldFact(novelId, fact) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.worldFacts.push({
+        ...fact,
+        addedAt: new Date().toISOString()
+      });
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added world fact for ${novelId}`);
+  }
+
+  /**
+   * Add a timeline event
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} event - { chapter, event, characters }
+   */
+  async addTimelineEvent(novelId, event) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.timeline.push(event);
+      // Keep timeline sorted by chapter
+      bible.timeline.sort((a, b) => a.chapter - b.chapter);
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added timeline event for ${novelId}`);
+  }
+
+  /**
+   * Add a Chekhov's gun (item/fact that must pay off later)
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} chekhov - { item, introduced, notes }
+   */
+  async addChekhov(novelId, chekhov) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      bible.chekhovs.push({
+        ...chekhov,
+        payoff: null,
+        addedAt: new Date().toISOString()
+      });
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Added Chekhov's gun for ${novelId}`);
+  }
+
+  /**
+   * Mark a Chekhov's gun as paid off
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} item - Item name
+   * @param {number} payoffChapter - Chapter where it paid off
+   */
+  async resolveChekhov(novelId, item, payoffChapter) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+      const chekhov = bible.chekhovs.find(c => c.item === item);
+      if (chekhov) {
+        chekhov.payoff = payoffChapter;
+      }
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Resolved Chekhov's gun "${item}" in chapter ${payoffChapter}`);
+  }
+
+  /**
+   * Update story bible from agent output (bulk update)
+   * Used by Gandalf/Frodo to update bible after generating content
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} updates - Partial story bible updates
+   */
+  async updateStoryBible(novelId, updates) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const bible = currentState.storyBible || { ...EMPTY_STORY_BIBLE };
+
+      // Merge characters
+      if (updates.characters) {
+        for (const [id, char] of Object.entries(updates.characters)) {
+          bible.characters[id] = { ...bible.characters[id], ...char, id };
+        }
+      }
+
+      // Append relationships (avoid duplicates)
+      if (updates.relationships) {
+        for (const rel of updates.relationships) {
+          const exists = bible.relationships.some(
+            r => r.from === rel.from && r.to === rel.to && r.type === rel.type
+          );
+          if (!exists) {
+            bible.relationships.push(rel);
+          }
+        }
+      }
+
+      // Append plot threads
+      if (updates.plotThreads) {
+        for (const thread of updates.plotThreads) {
+          const existing = bible.plotThreads.find(t => t.id === thread.id);
+          if (existing) {
+            Object.assign(existing, thread);
+          } else {
+            bible.plotThreads.push(thread);
+          }
+        }
+      }
+
+      // Append world facts (avoid duplicates)
+      if (updates.worldFacts) {
+        for (const fact of updates.worldFacts) {
+          const exists = bible.worldFacts.some(f => f.fact === fact.fact);
+          if (!exists) {
+            bible.worldFacts.push(fact);
+          }
+        }
+      }
+
+      // Append timeline events
+      if (updates.timeline) {
+        for (const event of updates.timeline) {
+          bible.timeline.push(event);
+        }
+        bible.timeline.sort((a, b) => a.chapter - b.chapter);
+      }
+
+      // Append chekhovs
+      if (updates.chekhovs) {
+        for (const chekhov of updates.chekhovs) {
+          const existing = bible.chekhovs.find(c => c.item === chekhov.item);
+          if (existing) {
+            Object.assign(existing, chekhov);
+          } else {
+            bible.chekhovs.push(chekhov);
+          }
+        }
+      }
+
+      return { storyBible: bible };
+    });
+
+    console.log(`[NovelManager] Updated story bible for ${novelId}`);
+  }
 }
 
 module.exports = {
   NovelManager,
   NOVEL_STATUS,
-  DEFAULT_CONFIG
+  REVISION_MODE,
+  DEFAULT_CONFIG,
+  EMPTY_STORY_BIBLE
 };

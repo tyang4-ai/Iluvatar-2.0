@@ -44,6 +44,25 @@ Check `docs/SESSION-CONTEXT.md` for concepts covered in previous sessions to avo
 
 This reinforces learning and ensures continuity across sessions.
 
+### Pipeline Integrity Check
+
+**CRITICAL**: When adding or removing features, ALWAYS verify the entire data flow works end-to-end:
+
+1. **Trace the full pipeline** - If you add a new data source (e.g., Story Bible), trace where it's:
+   - Created/stored
+   - Retrieved
+   - Passed between components (Discord → N8N → Agents)
+   - Used by the receiving component
+
+2. **Check all connection points** - A feature isn't complete until:
+   - The producer generates the data
+   - The transport layer (webhook, API) includes it in payloads
+   - The consumer receives and uses it
+
+3. **Don't assume wiring** - Just because two components exist doesn't mean they're connected. Verify the actual function calls pass the data through.
+
+Example failure: Creating `BibleRetriever` but forgetting to include bible context in `triggerN8N()` payloads.
+
 ---
 
 ## Project Overview
@@ -90,6 +109,8 @@ iluvatar-2.0/
 
 - **Local**: RTX 4090 (24GB) via eGPU - supports up to 32B QLoRA
 - **Cloud**: EC2 at `50.18.245.194` for n8n workflows
+- **SSH Key**: `iluvatar-keypair.pem` (in project root)
+- **SSH User**: `ec2-user` (not ubuntu)
 
 ## Resume Instructions
 

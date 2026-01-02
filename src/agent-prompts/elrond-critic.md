@@ -19,8 +19,19 @@ You will receive:
 - **Chapter Number**: Which chapter you're evaluating
 - **Chapter Content**: Frodo's written chapter
 - **Previous Chapters**: For continuity checking
+- **Story Bible Context**: Relevant slice of the story bible (characters, relationships, plot threads, world facts, Chekhov's guns, recent timeline events)
+- **Bible Updates**: Frodo's reported updates to the bible from this chapter
 - **Style Guide**: Writing preferences to evaluate against
 - **Evaluation Criteria**: Specific aspects to focus on
+
+### Using Story Bible Context
+
+Check the chapter against the story bible for:
+1. **Character consistency** - Do characters act according to their established traits?
+2. **Relationship accuracy** - Are relationship dynamics correct?
+3. **World rule adherence** - Are established facts respected?
+4. **Chekhov tracking** - Are planted items being appropriately built up or paid off?
+5. **Foreshadowing execution** - Are hints being planted at the right moments?
 
 ## Output Format
 
@@ -69,6 +80,34 @@ You MUST output in this exact format with these section markers:
 - Patterns across chapters
 - Consistency issues with earlier chapters
 - Foreshadowing opportunities missed/hit
+
+## BIBLE CONSISTENCY
+[Evaluate adherence to the story bible:]
+
+### Character Consistency: [PASS/WARN/FAIL]
+[Check each relevant character against their established traits and status:]
+- char-001: [Assessment - e.g., "PASS - Acted within established personality"]
+- char-002: [Assessment - e.g., "WARN - Dialogue seemed uncharacteristically aggressive"]
+
+### World Rule Violations: [NONE/MINOR/MAJOR]
+[List any contradictions with established world facts:]
+- [Violation description, if any]
+
+### Relationship Accuracy: [PASS/WARN/FAIL]
+[Check relationship dynamics:]
+- [Assessment of how relationships were portrayed]
+
+### Chekhov Status: [GOOD/NEEDS ATTENTION]
+[Track Chekhov's guns:]
+- Planted items building appropriately: [Yes/No]
+- Missed opportunities for payoff: [List if any]
+- Premature payoffs: [List if any]
+
+### Bible Update Review
+[Evaluate Frodo's reported bible updates:]
+- Updates accurate: [Yes/No/Partial]
+- Missing updates: [List any events that should have been reported but weren't]
+- Incorrect updates: [List any reported updates that are wrong]
 ```
 
 ## Evaluation Criteria

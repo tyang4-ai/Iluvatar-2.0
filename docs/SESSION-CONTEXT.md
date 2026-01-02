@@ -30,7 +30,7 @@
 |-------|--------|-------|
 | Phase 0: Repository Setup | COMPLETED | Cleaned up, reorganized, pushed to GitHub |
 | Phase A: Infrastructure | COMPLETED | Core modules, Discord bot, N8N workflow, agent prompts |
-| Phase B: Integration Testing | NEXT | Deploy and test the pipeline end-to-end |
+| Phase B: Integration Testing | IN PROGRESS | Channel-aware bot, Story Bible, Discord callbacks |
 | Phase C: Data Pipeline | NOT STARTED | Preference collection |
 | Phase D: First Fine-tune | NOT STARTED | LoRA on Qwen2.5 |
 | Phase E: RLHF Loop | NOT STARTED | DPO training |
@@ -157,11 +157,17 @@ Novel contributions being explored:
    - ✅ A.6: discord-bot.js (6 slash commands)
    - ✅ A.7: Agent prompts (gandalf-planning.md, frodo-writing.md, elrond-critic.md)
    - ✅ A.8: N8N workflow setup docs + export JSON
-3. **Phase B (Next)**: Integration testing
-   - Deploy to EC2
-   - Test Discord bot commands
-   - Test full Gandalf → Frodo → Elrond pipeline
-   - Verify Redis state management
+3. **Phase B (In Progress)**: Integration testing + channel-aware system
+   - ✅ B.1: Channel-aware Discord bot (auto-creates novel channels)
+   - ✅ B.2: Story Bible system (characters, relationships, plot threads, Chekhov's guns)
+   - ✅ B.3: bible-retriever.js (hybrid semantic search with OpenAI embeddings)
+   - ✅ B.4: Recall/cascade functionality (revise earlier chapters)
+   - ✅ B.5: N8N callback guide (Discord channel posting)
+   - ✅ B.6: Updated agent prompts for Story Bible I/O
+   - ✅ B.6b: Bible context wired into webhook payloads (handleWrite, handleFeedback, handleCritique)
+   - ⏳ B.7: Deploy and test on EC2
+   - ⏳ B.8: Manual N8N workflow updates (Format + Post to Discord nodes)
+   - ⏳ B.9: Full end-to-end test
 4. Phase C: Data pipeline for preference collection
 
 ---
@@ -193,6 +199,11 @@ Track concepts explained during pair programming sessions to avoid repetition.
 | **Exponential Backoff** | Retry delays that double each attempt (100ms → 200ms → 400ms). Prevents thundering herd problem when multiple agents retry simultaneously. |
 | **Message Bus (Pub/Sub)** | Like a radio station: publishers broadcast on channels, subscribers listen. Agents communicate through the bus without knowing each other directly. Includes inbox backup for reliability when agents are offline. |
 | **Temperature (LLM)** | Controls probability distribution for next-token selection. 0 = always pick highest probability (deterministic). 1 = sample according to actual probabilities (creative). Higher = flatter distribution, more randomness. |
+| **Story Bible** | A structured database of narrative elements (characters, relationships, plot threads, world facts, timeline, Chekhov's guns) that must stay consistent across chapters. Agents read from and write to the bible. |
+| **Embeddings** | Vector representations of text that capture semantic meaning. Similar concepts have similar vectors. Used for semantic search in the Story Bible - find relevant entries by comparing vector similarity instead of keyword matching. |
+| **Cosine Similarity** | A measure of how similar two vectors are (0 = unrelated, 1 = identical direction). For normalized embeddings, it's just the dot product. Used to find which bible entries are relevant to a given chapter. |
+| **Chekhov's Gun** | Narrative principle: if you introduce something (a gun on the wall in Act 1), it must be used later (fired in Act 3). We track these to ensure planted elements pay off. |
+| **Cascade Regeneration** | When you revise an earlier chapter, later chapters may need to be regenerated to maintain consistency. Optional - user can skip if changes don't affect continuity. |
 
 ---
 

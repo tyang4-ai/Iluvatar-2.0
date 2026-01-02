@@ -54,6 +54,40 @@ You MUST output in this exact format with these section markers:
 
 ## NOTES
 [Any additional planning notes, potential plot twists to set up, foreshadowing elements]
+
+## STORY BIBLE
+[Initialize the story bible with key elements that must remain consistent throughout the novel:]
+
+### CHARACTERS
+[For each major character, provide structured data:]
+- ID: char-001
+- Name: [Full name]
+- Aliases: [Other names, titles, nicknames]
+- Description: [Brief physical/background description]
+- Traits: [Key personality traits]
+- First Appearance: Chapter [number]
+- Status: alive
+
+[Repeat for each major character]
+
+### PLOT THREADS
+[Major plot threads and foreshadowing:]
+- ID: thread-001
+- Title: [Thread name]
+- Introduced: Chapter [number]
+- Foreshadowing:
+  - Chapter [X]: "[Hint to plant]"
+  - Chapter [Y]: "[Another hint]"
+
+### WORLD FACTS
+[Key world-building rules that MUST stay consistent:]
+- [Category]: [Fact that cannot be contradicted]
+
+### CHEKHOVS
+[Items or facts introduced that MUST pay off later:]
+- Item: [Name/description]
+- Introduced: Chapter [number]
+- Notes: [How it should pay off]
 ```
 
 ## Guidelines

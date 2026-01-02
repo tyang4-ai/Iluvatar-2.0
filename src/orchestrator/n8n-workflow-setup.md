@@ -56,11 +56,24 @@ Discord Bot triggers webhook
 The webhook receives:
 ```json
 {
-  "action": "outline" | "write" | "revise",
+  "action": "outline" | "write" | "critique" | "revise_outline" | "revise_chapter",
   "novelId": "novel-abc123",
-  "metadata": { ... }
+  "metadata": { "title": "...", "genre": "...", "language": "zh|en", ... },
+  "chapterNum": 1,
+  "feedback": "...",
+  "bibleContext": "## STORY BIBLE CONTEXT\n\n### CHARACTERS\n...",
+  "callback": {
+    "discordChannelId": "123456789012345678",
+    "botToken": "MTQ0OTcwNjcxMDU5MDU1..."
+  }
 }
 ```
+
+**Field Notes:**
+- `bibleContext`: Pre-formatted story bible slice (characters, relationships, plot threads, Chekhov's guns, timeline). Included for `write`, `critique`, and `revise_chapter` actions. Pass this directly to the agent prompt.
+- `chapterNum`: Which chapter is being written/critiqued/revised
+- `feedback`: User's revision feedback (only for `revise_outline` and `revise_chapter`)
+- `callback`: Used by N8N to post results back to the correct Discord channel
 
 ### 3. Add IF Node (Route by Action)
 
@@ -97,10 +110,52 @@ Body:
 ```
 
 #### Frodo (Writing)
-Same structure, different prompt and potentially different model.
+```
+URL: https://api.anthropic.com/v1/messages
+Method: POST
+Headers:
+  - x-api-key: {{ $env.ANTHROPIC_API_KEY }}
+  - anthropic-version: 2023-06-01
+  - content-type: application/json
+Body:
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 8192,
+  "messages": [
+    {
+      "role": "user",
+      "content": "{{ $json.prompt }}\n\n{{ $json.bibleContext || '' }}"
+    }
+  ],
+  "system": "{{ $env.FRODO_PROMPT }}"
+}
+```
+
+**Important**: Include `bibleContext` in the user message so Frodo has story bible context for consistency.
 
 #### Elrond (Critic)
-Same structure, different prompt.
+```
+URL: https://api.anthropic.com/v1/messages
+Method: POST
+Headers:
+  - x-api-key: {{ $env.ANTHROPIC_API_KEY }}
+  - anthropic-version: 2023-06-01
+  - content-type: application/json
+Body:
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 8192,
+  "messages": [
+    {
+      "role": "user",
+      "content": "{{ $json.prompt }}\n\n{{ $json.bibleContext || '' }}"
+    }
+  ],
+  "system": "{{ $env.ELROND_PROMPT }}"
+}
+```
+
+**Important**: Include `bibleContext` in the user message so Elrond can verify consistency against the story bible.
 
 ### 5. Add Redis Nodes
 
@@ -174,12 +229,206 @@ const message = await client.messages.create({
 return { json: { output: message.content[0].text } };
 ```
 
+## Discord Callback (Posting Results to Channel)
+
+After each agent completes, the workflow posts formatted results back to the correct Discord channel.
+
+### Webhook Payload (Updated)
+
+The Discord bot now sends callback information with each trigger:
+
+```json
+{
+  "action": "outline" | "write" | "critique" | "revise_outline" | "revise_chapter",
+  "novelId": "novel-abc123",
+  "metadata": { "title": "...", "genre": "...", ... },
+  "chapterNum": 1,
+  "feedback": "...",
+  "callback": {
+    "discordChannelId": "123456789012345678",
+    "botToken": "MTQ0OTcwNjcxMDU5MDU1..."
+  }
+}
+```
+
+### Step 1: Add "Format Discord Message" Code Node
+
+After each `[Save to Redis]` node, add a **Code** node:
+
+**Name**: `Format Discord Message`
+
+```javascript
+// Get data from previous nodes
+const webhookData = $('Webhook').first().json.body;
+const action = webhookData.action;
+const novelId = webhookData.novelId;
+const channelId = webhookData.callback?.discordChannelId;
+const metadata = webhookData.metadata || {};
+
+// Get agent output (adjust based on which path)
+let title, description, color, fields;
+
+switch (action) {
+  case 'outline':
+    title = '📜 Outline Generated';
+    description = `**${metadata.title || 'Novel'}** outline is ready for review.`;
+    color = 0x3498db; // Blue
+    fields = [
+      { name: 'Novel ID', value: novelId, inline: true },
+      { name: 'Genre', value: metadata.genre || 'N/A', inline: true },
+      { name: 'Language', value: metadata.language || 'N/A', inline: true },
+      { name: 'Status', value: '⏳ Awaiting Approval', inline: true },
+      { name: 'Next Step', value: 'Use `/novel approve` to approve or `/novel feedback` to revise', inline: false }
+    ];
+    break;
+
+  case 'write':
+    const chapterNum = webhookData.chapterNum || 1;
+    title = `✍️ Chapter ${chapterNum} Written`;
+    description = `**${metadata.title || 'Novel'}** - Chapter ${chapterNum} is ready.`;
+    color = 0x2ecc71; // Green
+    fields = [
+      { name: 'Novel ID', value: novelId, inline: true },
+      { name: 'Chapter', value: String(chapterNum), inline: true },
+      { name: 'Status', value: '📝 Ready for Review', inline: true },
+      { name: 'Next Step', value: 'Use `/novel critique` for evaluation or `/novel approve` to continue', inline: false }
+    ];
+    break;
+
+  case 'critique':
+    const critiqueChapter = webhookData.chapterNum || 1;
+    // Try to parse score from Elrond's output
+    const elrondOutput = $('Elrond').first()?.json?.content?.[0]?.text || '';
+    const scoreMatch = elrondOutput.match(/## SCORE\s*\n\s*(\d+)/);
+    const score = scoreMatch ? parseInt(scoreMatch[1]) : 'N/A';
+    const passed = typeof score === 'number' && score >= 70;
+
+    title = `🔍 Chapter ${critiqueChapter} Critique`;
+    description = `Elrond has evaluated Chapter ${critiqueChapter}.`;
+    color = passed ? 0x2ecc71 : 0xe74c3c; // Green if pass, Red if fail
+    fields = [
+      { name: 'Novel ID', value: novelId, inline: true },
+      { name: 'Chapter', value: String(critiqueChapter), inline: true },
+      { name: 'Score', value: `${score}/100`, inline: true },
+      { name: 'Verdict', value: passed ? '✅ Passed' : '❌ Needs Revision', inline: true },
+      { name: 'Next Step', value: passed ? 'Use `/novel write` for next chapter' : 'Use `/novel feedback` to revise', inline: false }
+    ];
+    break;
+
+  case 'revise_outline':
+    title = '📜 Outline Revised';
+    description = `**${metadata.title || 'Novel'}** outline has been revised.`;
+    color = 0x9b59b6; // Purple
+    fields = [
+      { name: 'Novel ID', value: novelId, inline: true },
+      { name: 'Status', value: '⏳ Awaiting Approval', inline: true },
+      { name: 'Next Step', value: 'Use `/novel approve` to approve or `/novel feedback` for more changes', inline: false }
+    ];
+    break;
+
+  case 'revise_chapter':
+    const reviseChapter = webhookData.chapterNum || 1;
+    title = `✍️ Chapter ${reviseChapter} Revised`;
+    description = `Chapter ${reviseChapter} has been revised.`;
+    color = 0x9b59b6; // Purple
+    fields = [
+      { name: 'Novel ID', value: novelId, inline: true },
+      { name: 'Chapter', value: String(reviseChapter), inline: true },
+      { name: 'Status', value: '📝 Ready for Review', inline: true },
+      { name: 'Next Step', value: 'Use `/novel critique` to re-evaluate or `/novel approve` to continue', inline: false }
+    ];
+    break;
+
+  default:
+    title = '📢 Pipeline Update';
+    description = `Action: ${action}`;
+    color = 0x95a5a6;
+    fields = [{ name: 'Novel ID', value: novelId, inline: true }];
+}
+
+// Build Discord embed
+const embed = {
+  title,
+  description,
+  color,
+  fields,
+  timestamp: new Date().toISOString(),
+  footer: { text: 'ILUVATAR Pipeline' }
+};
+
+return {
+  json: {
+    channelId,
+    botToken: webhookData.callback?.botToken,
+    embed
+  }
+};
+```
+
+### Step 2: Add "Post to Discord" HTTP Request Node
+
+**Name**: `Post to Discord Channel`
+**Type**: HTTP Request
+
+- **Method**: POST
+- **URL**: `https://discord.com/api/v10/channels/{{ $json.channelId }}/messages`
+- **Authentication**: Header Auth
+- **Headers**:
+  - `Authorization`: `Bot {{ $json.botToken }}`
+  - `Content-Type`: `application/json`
+- **Body** (JSON):
+```json
+{
+  "embeds": [{{ JSON.stringify($json.embed) }}]
+}
+```
+
+### Step 3: Connect Nodes
+
+For EACH path (outline, write, critique, revise_outline, revise_chapter):
+
+```
+[Agent Node] → [Save to Redis] → [Format Discord Message] → [Post to Discord Channel]
+```
+
+### Workflow Diagram (Updated)
+
+```
+Discord Bot triggers webhook
+         ↓
+    [Webhook Node]
+         ↓
+    [IF: Check Action]
+         ↓
+    ┌────┴────┬────────┬──────────┬──────────────┐
+    ↓         ↓        ↓          ↓              ↓
+ outline    write   critique  revise_outline  revise_chapter
+    ↓         ↓        ↓          ↓              ↓
+ Gandalf   Frodo    Elrond    Gandalf         Frodo
+    ↓         ↓        ↓          ↓              ↓
+    └────┬────┴────┬───┴──────────┴──────────────┘
+         ↓         ↓
+    [Save to Redis]
+         ↓
+    [Format Discord Message]
+         ↓
+    [Post to Discord Channel]
+```
+
+### Security Note
+
+The bot token is passed in the webhook payload. In production, you may want to:
+1. Store the token in N8N environment variables instead
+2. Use `$env.DISCORD_BOT_TOKEN` in the HTTP Request node
+3. Remove `botToken` from the webhook payload
+
 ## Testing
 
 1. Activate the workflow
 2. Use Discord `/novel create` to trigger
 3. Check N8N execution logs for errors
 4. Verify Redis has the saved data
+5. **Verify Discord channel received the formatted result**
 
 ## Debugging
 

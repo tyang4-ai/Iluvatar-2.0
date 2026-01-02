@@ -10,6 +10,7 @@ require('dotenv').config();
 const { IluvatarBot } = require('./discord-bot');
 const { StateManager } = require('../core/state-manager');
 const { NovelManager } = require('../core/novel-manager');
+const { BibleRetriever } = require('../core/bible-retriever');
 
 async function main() {
   console.log('[ILUVATAR] Starting novel writer bot...');
@@ -24,6 +25,19 @@ async function main() {
     maxRevisions: parseInt(process.env.MAX_REVISIONS) || 3
   });
   console.log('[ILUVATAR] Novel manager initialized');
+
+  // Initialize bible retriever (for semantic search on story bible)
+  // Only initialize if OpenAI key is provided
+  if (process.env.OPENAI_API_KEY) {
+    const bibleRetriever = new BibleRetriever(novelManager, {
+      topK: 15,
+      similarityThreshold: 0.6
+    });
+    novelManager.bibleRetriever = bibleRetriever;
+    console.log('[ILUVATAR] Bible retriever initialized');
+  } else {
+    console.log('[ILUVATAR] Bible retriever disabled (no OPENAI_API_KEY)');
+  }
 
   // Initialize and start Discord bot
   const bot = new IluvatarBot({
