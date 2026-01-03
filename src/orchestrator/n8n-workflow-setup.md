@@ -159,12 +159,48 @@ Body:
 
 ### 5. Add Redis Nodes
 
-Use the **Redis** node to save results:
+**IMPORTANT**: Our StateManager uses Redis **Hash** operations, not simple key-value. Each novel's data is stored as a hash with fields like `outline`, `chapters`, `metadata`.
+
+#### For Outline (after Gandalf):
 
 1. Add node: **Redis**
-2. Operation: Set
-3. Key: `novel:{{ $json.novelId }}:data`
-4. Value: `{{ $json.output }}`
+2. Operation: **Hash Set** (HSET)
+3. Key: `novel:{{ $json.body.novelId }}:data`
+4. Field: `outline`
+5. Value: `{{ JSON.stringify({ raw: $json.output, savedAt: new Date().toISOString() }) }}`
+
+#### For Chapters (after Frodo):
+
+1. Add node: **Redis**
+2. Operation: **Hash Get** first to get existing chapters, then **Hash Set**
+3. Key: `novel:{{ $json.body.novelId }}:data`
+4. Field: `chapters`
+5. Value: Merge new chapter into existing chapters object
+
+**Code Node for Chapter Save:**
+```javascript
+// Get existing chapters from Redis first (via previous node)
+const existingChapters = $('Redis Get Chapters').first()?.json || {};
+const chapterNum = $('Webhook').first().json.body.chapterNum || 1;
+const parsedOutput = $('Parse Frodo Output').first().json;
+
+// Add new chapter
+existingChapters[chapterNum] = {
+  title: parsedOutput.chapter_title,
+  content: parsedOutput.content,
+  wordCount: parsedOutput.word_count,
+  raw: parsedOutput.raw,
+  savedAt: new Date().toISOString()
+};
+
+return { json: { chapters: existingChapters } };
+```
+
+Then save with:
+- Operation: **Hash Set**
+- Key: `novel:{{ $json.body.novelId }}:data`
+- Field: `chapters`
+- Value: `{{ JSON.stringify($json.chapters) }}`
 
 ### 6. Add Text Parser (Function Node)
 
@@ -440,3 +476,41 @@ The bot token is passed in the webhook payload. In production, you may want to:
 ## Import Workflow
 
 See `n8n-workflow-export.json` for a complete importable workflow.
+
+---
+
+## Critical Fix: Data Flow Through Load Nodes (Jan 2026)
+
+### The Problem
+
+When the workflow passes through a "Load" node (Load Outline, Load Chapter), the original webhook data (novelId, metadata, callback) is **lost**. The Load node only outputs what it loaded from Redis.
+
+**Symptom**: Chapters save to `novel:undefined:chapter:1` and Discord notifications fail with empty channelId.
+
+### The Solution
+
+In ALL prompt builder Code nodes that come AFTER a Load node, get webhook data directly from the Webhook node instead of `$input`:
+
+```javascript
+// ❌ WRONG - loses data after Load node
+const input = $input.first().json.body || $input.first().json;
+const novelId = input.novelId;  // undefined!
+
+// ✅ CORRECT - always has the original data
+const webhookData = $('Webhook').first().json.body;
+const novelId = webhookData.novelId;  // correct!
+const callback = webhookData.callback;  // preserved!
+
+// Get loaded data from $input
+const loadedOutline = $input.first().json.outline;
+```
+
+### Affected Nodes
+
+These 4 prompt builder nodes needed this fix:
+1. **Build Frodo Prompt** (write action) - comes after "Load Outline"
+2. **Build Elrond Prompt** (critique action) - comes after "Load Chapter"
+3. **Build Gandalf Prompt (revise)** (revise_outline action) - comes after "Load Outline"
+4. **Build Frodo Prompt (revise)** (revise_chapter action) - comes after "Load Chapter"
+
+**Build Gandalf Prompt** (outline action) does NOT need this fix because it receives directly from the webhook without a Load node in between.

@@ -30,7 +30,7 @@
 |-------|--------|-------|
 | Phase 0: Repository Setup | COMPLETED | Cleaned up, reorganized, pushed to GitHub |
 | Phase A: Infrastructure | COMPLETED | Core modules, Discord bot, N8N workflow, agent prompts |
-| Phase B: Integration Testing | IN PROGRESS | Channel-aware bot, Story Bible, Discord callbacks |
+| Phase B: Integration Testing | COMPLETED | Channel-aware bot, Story Bible, Discord callbacks, N8N fixes |
 | Phase C: Data Pipeline | NOT STARTED | Preference collection |
 | Phase D: First Fine-tune | NOT STARTED | LoRA on Qwen2.5 |
 | Phase E: RLHF Loop | NOT STARTED | DPO training |
@@ -157,7 +157,7 @@ Novel contributions being explored:
    - ✅ A.6: discord-bot.js (6 slash commands)
    - ✅ A.7: Agent prompts (gandalf-planning.md, frodo-writing.md, elrond-critic.md)
    - ✅ A.8: N8N workflow setup docs + export JSON
-3. **Phase B (In Progress)**: Integration testing + channel-aware system
+3. **Phase B (COMPLETED)**: Integration testing + channel-aware system
    - ✅ B.1: Channel-aware Discord bot (auto-creates novel channels)
    - ✅ B.2: Story Bible system (characters, relationships, plot threads, Chekhov's guns)
    - ✅ B.3: bible-retriever.js (hybrid semantic search with OpenAI embeddings)
@@ -170,8 +170,13 @@ Novel contributions being explored:
    - ✅ B.9a: Library channel auto-creation on bot startup
    - ✅ B.9b: Channel-based command gating (library vs novel channels)
    - ✅ B.9c: `/novel delete` command for library channel
-   - ⏳ B.10: Full end-to-end test (redeploy bot, test complete workflow)
-4. Phase C: Data pipeline for preference collection
+   - ✅ B.10: N8N prompt builders fixed (novelId/callback preserved through Load nodes)
+   - ✅ B.11: Language enforcement (Chinese novels generate Chinese content)
+   - ✅ B.12: Chapter generation verified (saves to correct Redis keys)
+4. **Phase C (NEXT)**: Data pipeline for preference collection
+   - C.1: Export chapter data for DPO training pairs
+   - C.2: Collect human preference signals via Discord reactions
+   - C.3: Store training data in S3
 
 ---
 
@@ -207,6 +212,55 @@ Track concepts explained during pair programming sessions to avoid repetition.
 | **Cosine Similarity** | A measure of how similar two vectors are (0 = unrelated, 1 = identical direction). For normalized embeddings, it's just the dot product. Used to find which bible entries are relevant to a given chapter. |
 | **Chekhov's Gun** | Narrative principle: if you introduce something (a gun on the wall in Act 1), it must be used later (fired in Act 3). We track these to ensure planted elements pay off. |
 | **Cascade Regeneration** | When you revise an earlier chapter, later chapters may need to be regenerated to maintain consistency. Optional - user can skip if changes don't affect continuity. |
+| **Dual-Key Fallback** | StateManager now checks both Redis hash fields (`HGET novel:xyz:data outline`) AND simple string keys (`GET novel:xyz:outline`). This bridges N8N (which only supports SET/GET) with the bot's hash-based storage. For chapters/critiques, it aggregates individual keys (novel:xyz:chapter:1, :2, :3) into the expected object format. |
+| **N8N Data Flow Issue** | When N8N workflow passes through a "Load" node (Load Outline, Load Chapter), the original webhook data (novelId, metadata, callback) is lost. Solution: Use `$('Webhook').first().json.body` to get original data, not `$input.first().json`. |
+
+---
+
+## N8N Workflow Configuration
+
+The N8N workflow ("Iluvatar 2.0") has been configured and is running at http://50.18.245.194:5678.
+
+### Critical N8N Fix Applied (Jan 2026)
+
+**Problem**: Chapters were saving to `novel:undefined:chapter:1` and Discord notifications had empty channelId.
+
+**Root Cause**: Prompt builder nodes used `$input.first().json` to get novelId, but after passing through "Load Outline" or "Load Chapter" Redis nodes, only the loaded data remained.
+
+**Fix**: Updated all 4 prompt builder nodes to reference `$('Webhook').first().json.body` directly:
+- Build Frodo Prompt (write action)
+- Build Elrond Prompt (critique action)
+- Build Gandalf Prompt (revise) (revise_outline action)
+- Build Frodo Prompt (revise) (revise_chapter action)
+
+**Pattern**:
+```javascript
+// CORRECT - get from Webhook node directly
+const webhookData = $('Webhook').first().json.body;
+const novelId = webhookData.novelId;
+const callback = webhookData.callback || {};
+
+// Get loaded data from $input
+const loadedOutline = $input.first().json.outline;
+```
+
+### N8N Process Management
+
+N8N runs outside PM2 (orphan process started by start-n8n.sh). To manage:
+```bash
+# Find N8N process
+pgrep -af n8n
+
+# Kill if needed
+kill <pid>
+
+# Start N8N with prompts
+~/start-n8n.sh
+```
+
+The `start-n8n.sh` script loads:
+- Agent prompts from `~/iluvatar-2.0/src/agent-prompts/`
+- API keys from `~/.n8n/.env`
 
 ---
 

@@ -212,13 +212,97 @@ class StateManager {
 
   /**
    * Get specific key from state (no versioning)
+   *
+   * DUAL-KEY FALLBACK:
+   * Tries hash field first (novel:xyz:data → outline), then falls back to
+   * simple string key (novel:xyz:outline). This supports both:
+   * - Discord bot writes: HSET novel:xyz:data outline "..."
+   * - N8N writes: SET novel:xyz:outline "..."
+   *
+   * SPECIAL HANDLING for 'chapters' and 'critiques':
+   * N8N saves individual items to novel:xyz:chapter:1, novel:xyz:chapter:2, etc.
+   * but NovelManager expects {1: {...}, 2: {...}} object.
+   * This method aggregates those individual keys into an object.
+   *
    * @param {string} scope - "global" or "novel:{novelId}"
    * @param {string} key - Key to get
    */
   async get(scope, key) {
     const { dataKey } = getScopeKeys(scope);
-    const value = await this.redis.hget(dataKey, key);
-    return value ? JSON.parse(value) : null;
+
+    // Try hash field first (primary storage)
+    const hashValue = await this.redis.hget(dataKey, key);
+    if (hashValue && hashValue !== 'null') {
+      try {
+        const parsed = JSON.parse(hashValue);
+        // Only return if it's a real value (not null/undefined/empty object for outline)
+        if (parsed !== null && parsed !== undefined) {
+          return parsed;
+        }
+      } catch {
+        return hashValue;
+      }
+    }
+
+    // Special handling for 'chapters' and 'critiques' - aggregate from N8N's individual keys
+    if (key === 'chapters' || key === 'critiques') {
+      return await this._aggregateN8NKeys(scope, key);
+    }
+
+    // Fallback: try simple string key (for N8N compatibility)
+    // N8N saves to "novel:xyz:outline" instead of hash field
+    const simpleKey = `${scope}:${key}`;
+    const simpleValue = await this.redis.get(simpleKey);
+    if (simpleValue) {
+      try {
+        return JSON.parse(simpleValue);
+      } catch {
+        return simpleValue;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Aggregate individual N8N keys into an object
+   *
+   * N8N saves: novel:xyz:chapter:1, novel:xyz:chapter:2, etc.
+   * We aggregate into: { 1: {...}, 2: {...} }
+   *
+   * @param {string} scope - "novel:{novelId}"
+   * @param {string} type - "chapters" or "critiques"
+   * @private
+   */
+  async _aggregateN8NKeys(scope, type) {
+    // Map plural to singular: chapters -> chapter, critiques -> critique
+    const singular = type === 'chapters' ? 'chapter' : 'critique';
+    const pattern = `${scope}:${singular}:*`;
+
+    // Find all matching keys
+    const keys = await this.redis.keys(pattern);
+    if (!keys || keys.length === 0) {
+      return {};
+    }
+
+    // Fetch all values
+    const result = {};
+    for (const key of keys) {
+      // Extract chapter number from key: "novel:xyz:chapter:1" -> "1"
+      const parts = key.split(':');
+      const num = parts[parts.length - 1];
+
+      const value = await this.redis.get(key);
+      if (value) {
+        try {
+          result[num] = JSON.parse(value);
+        } catch {
+          result[num] = value;
+        }
+      }
+    }
+
+    return result;
   }
 
   /**
