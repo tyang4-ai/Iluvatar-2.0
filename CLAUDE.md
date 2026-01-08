@@ -63,6 +63,38 @@ This reinforces learning and ensures continuity across sessions.
 
 Example failure: Creating `BibleRetriever` but forgetting to include bible context in `triggerN8N()` payloads.
 
+### ⚠️ COMMIT AND PUSH CHANGES
+
+**CRITICAL**: After making code changes, ALWAYS commit and push to GitHub before deploying to EC2.
+
+The EC2 server should run code that's tracked in git. This ensures:
+1. Changes are version controlled and recoverable
+2. Local and EC2 code stay in sync
+3. Other developers can see what's deployed
+
+**Before scp to EC2:**
+```bash
+git add <changed-files>
+git commit -m "Description of changes"
+git push
+```
+
+### ⚠️ STABLE CODE - DO NOT MODIFY WITHOUT SPECIFIC BUG
+
+The following files are **working and tested**. Do NOT refactor, "improve", or change them unless fixing a specific reported bug:
+
+- `src/orchestrator/discord-bot.js` - 25 slash commands, all working
+- `src/core/state-manager.js` - Dual-key fallback, Claude text extraction
+- `src/core/novel-manager.js` - Novel lifecycle, Story Bible parsing
+- `src/core/bible-retriever.js` - Semantic search with embeddings
+- `src/agent-prompts/*.md` - Gandalf, Frodo, Elrond prompts
+
+**Before touching stable code:**
+1. Read the existing code to understand WHY it's built that way
+2. Test the current behavior to confirm it works
+3. Make minimal changes for the specific fix
+4. Don't add "improvements" or refactor working logic
+
 ---
 
 ## Project Overview
@@ -112,9 +144,93 @@ iluvatar-2.0/
 - **SSH Key**: `iluvatar-keypair.pem` (in project root)
 - **SSH User**: `ec2-user` (not ubuntu)
 
+## Discord Bot Deployment
+
+The Discord bot runs on EC2, NOT locally. To deploy changes:
+
+```bash
+# 1. Copy updated files to EC2
+scp -i iluvatar-keypair.pem src/orchestrator/discord-bot.js ec2-user@50.18.245.194:/home/ec2-user/iluvatar-2.0/src/orchestrator/
+scp -i iluvatar-keypair.pem src/core/state-manager.js ec2-user@50.18.245.194:/home/ec2-user/iluvatar-2.0/src/core/
+
+# 2. Restart the bot via PM2
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194 "pm2 restart iluvatar-bot"
+
+# 3. Check logs
+ssh -i iluvatar-keypair.pem ec2-user@50.18.245.194 "pm2 logs iluvatar-bot --lines 20 --nostream"
+```
+
+**PM2 Process**: `iluvatar-bot` (runs from `/home/ec2-user/iluvatar-2.0`)
+
+## N8N API Access
+
+Use this API key to verify and inspect the N8N workflow programmatically:
+
+- **N8N URL**: `http://50.18.245.194:5678`
+- **API Key**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmZjU5MGZjNS0wMWUxLTQ3NGEtODQxOC1iZmM4M2UxZTc2MGIiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzY3ODI5MDU2fQ.8RHdUN5peOS8nqr6fjX6sZUGNPX0rHhFQBhv4Y8ABJk`
+
+**Example API calls:**
+```bash
+# List all workflows
+curl -H "X-N8N-API-KEY: <key>" http://50.18.245.194:5678/api/v1/workflows
+
+# Get specific workflow by ID
+curl -H "X-N8N-API-KEY: <key>" http://50.18.245.194:5678/api/v1/workflows/{id}
+
+# Get workflow executions
+curl -H "X-N8N-API-KEY: <key>" http://50.18.245.194:5678/api/v1/executions
+```
+
+Use this to verify workflow configuration before and after changes.
+
+## ⚠️ N8N Container Warning
+
+**NEVER recreate the N8N Docker container** (`docker rm n8n`) without first:
+1. Exporting ALL workflows via the N8N UI (Workflows → Export)
+2. Saving credentials info (they are stored in the container's database)
+3. Backing up `/home/ec2-user/.n8n/database.sqlite`
+
+The workflow and credentials are stored in SQLite inside the container's mounted volume. Recreating the container with different volume mounts or losing the database = **total workflow loss**.
+
+**Safe way to add env vars**: Use `docker update` or edit the existing container, don't recreate.
+
+**Workflow backup location**: `temp_workflow.json` in project root (exported 2026-01-07)
+
+## N8N Node Code Changes
+
+**IMPORTANT**: When asking the user to modify N8N Code nodes:
+
+1. **Provide complete, copy-pasteable code** - The user needs to replace the whole node content, not hunt for specific lines.
+
+2. **ALWAYS use the live N8N API** - NEVER read local files like `temp_workflow.json` for workflow state. The local backup is often outdated. Always fetch current state from the live API:
+   ```bash
+   # Get live workflow data
+   curl -s -H "X-N8N-API-KEY: <key>" "http://50.18.245.194:5678/api/v1/workflows/BZ9bA0uX63uh8hau"
+   ```
+
+3. **Verify node names before referencing them** - NEVER assume node names like "Load Novel Data (revise chapter)". Always check the actual workflow first:
+   ```bash
+   curl -s -H "X-N8N-API-KEY: <key>" "http://50.18.245.194:5678/api/v1/workflows/BZ9bA0uX63uh8hau" | grep -o '"name":"[^"]*"' | sort -u
+   ```
+   Common node names in this workflow:
+   - `Load Current Chapter` (not "Load Novel Data")
+   - `Load Current Outline` (not "Load Outline for Revise")
+   - `Load Outline` (for write flow)
+   - `Load Chapter` (for critique flow)
+
 ## Resume Instructions
 
 1. Read `docs/SESSION-CONTEXT.md`
 2. Check current phase status
 3. Continue with PAIR PROGRAMMING approach
 4. Update SESSION-CONTEXT.md after progress
+
+## Session Context Updates
+
+**IMPORTANT**: Update `docs/SESSION-CONTEXT.md` after EVERY major change:
+- Code fixes or new features
+- N8N workflow modifications
+- Bug investigations and resolutions
+- Architecture decisions
+
+This ensures continuity when context is lost. Don't wait until the end of a session - update as you go.
