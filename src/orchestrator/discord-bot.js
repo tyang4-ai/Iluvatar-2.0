@@ -1236,8 +1236,18 @@ class IluvatarBot {
 
       feedbackTarget = `chapter ${targetChapter}`;
       action = 'revise_chapter';
-      const ch = state.chapters?.[targetChapter];
-      originalContent = typeof ch === 'string' ? ch : (ch?.content || ch?.text || '');
+      // Note: chapter keys are strings, targetChapter might be a number
+      const ch = state.chapters?.[String(targetChapter)];
+
+      // Extract content - handle Claude API response format {data: [{type: "text", text: "..."}]}
+      if (typeof ch === 'string') {
+        originalContent = ch;
+      } else if (ch?.data && Array.isArray(ch.data)) {
+        const textBlock = ch.data.find(item => item.type === 'text');
+        originalContent = textBlock?.text || '';
+      } else {
+        originalContent = ch?.content || ch?.text || '';
+      }
 
       if (!originalContent) {
         await interaction.editReply(`Chapter ${targetChapter} hasn't been written yet.`);
