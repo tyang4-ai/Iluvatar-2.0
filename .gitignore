@@ -54,3 +54,6 @@ build/
 
 # Wandb
 wandb/
+
+# Claude instructions (contains API keys)
+CLAUDE.md

@@ -456,13 +456,61 @@ The following components are **working correctly** and should NOT be modified un
 - ✅ `handleWrite()` checks for `chapterPlan_{chapterNum}` in Redis
 - ✅ Shows friendly error with `/novel plan_chapter` suggestion if missing
 
-**Pending N8N Work**:
-- Add `Load Chapter Plan` Redis node before `Build Frodo Prompt`
-- Update `Build Frodo Prompt` to include chapter plan in Frodo's prompt
-- See `temp_n8n_frodo_prompt_update.js` for updated code
+**N8N Work Completed (Jan 8, 2026)**:
+- ✅ Added `Load Chapter Plan` Redis node (Hash Get from `novel:{novelId}:data`)
+- ✅ Wired: `Load Outline` → `Load Chapter Plan` → `Build Frodo Prompt`
+- ✅ Updated `Build Frodo Prompt` to extract `chapterPlan_{chapterNum}` and include in prompt
+
+**Ready for Testing**:
+- `/novel plan_chapter chapter:N` → Gandalf creates detailed plan → saves to Redis
+- `/novel write` → Checks plan exists → Frodo writes using the plan
 
 ---
 
+## Bug Fixes Applied (Jan 8, 2026)
+
+### 1. Discord Bot Errors Fixed
+
+**getPreviousChapterPlans undefined error**:
+- Code was calling `this.stateManager.getPreviousChapterPlans()` but `this.stateManager` didn't exist
+- Fixed to use `this.novelManager.state.get()` with proper string key fallback
+- File: `src/orchestrator/discord-bot.js`
+
+**syncChapterMetadata is not a function error**:
+- EC2 had outdated `novel-manager.js` missing the `syncChapterMetadata()` method
+- Deployed updated file with all methods
+- File: `src/core/novel-manager.js`
+
+### 2. /novel feedback Not Finding Chapters
+
+**Problem**: "Chapter 4 hasn't been written yet" even though chapter was saved.
+
+**Root Causes**:
+1. Chapter keys are strings (`'4'`) but `targetChapter` was a number (`4`)
+2. Chapters stored in Claude API format `{data: [{type: "text", text: "..."}]}` but code looked for `{content: "..."}` or `{text: "..."}`
+
+**Fix**: Convert chapter number to string and extract text from Claude API response format.
+- File: `src/orchestrator/discord-bot.js`
+
+### 3. N8N Sync Chapter Metadata URL
+
+**Problem**: N8N "Sync Chapter Metadata" node used `http://localhost:3001/sync-chapter` but N8N runs in Docker container where localhost doesn't reach the host.
+
+**Fix**: Changed URL to `http://172.17.0.1:3001/sync-chapter` (Docker bridge gateway).
+- Node: "Sync Chapter Metadata" (both instances)
+
+### 4. Story Bible Updates Not Saving (Frodo → Bible)
+
+**Problem**: Frodo outputs `## BIBLE UPDATES` section but updates weren't being applied.
+
+**Root Cause**: Gandalf saves `characters` as an array, but `Merge Bible Data` node expected an object indexed by ID. Array lookup `characters["char-001"]` returns undefined.
+
+**Fix**: Updated "Merge Bible Data" node to:
+1. Convert array to object if needed (backwards compatibility)
+2. Find characters by name if ID lookup fails
+- Node: "Merge Bible Data" in N8N
+
+---
 
 ## Resume Instructions
 

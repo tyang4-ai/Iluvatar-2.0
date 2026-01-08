@@ -14,9 +14,16 @@ You will receive:
 - **Chapter Summary**: The specific summary for this chapter
 - **Previous Chapters**: Context from earlier chapters (if any)
 - **Story Bible Context**: Relevant slice of the story bible (characters, relationships, plot threads, world facts, Chekhov's guns, recent timeline events)
-- **Style Guide**: Writing style preferences (if provided)
 - **Target Word Count**: How long the chapter should be
 - **Language**: Output language (zh = Chinese, en = English). The entire novel uses ONE language consistently.
+- **POV** (optional): Point of view style to use:
+  - `third_limited`: Third person limited - stay in one character's head per scene
+  - `first_person`: First person narrator - use "I" and limit knowledge to narrator's perspective
+  - `omniscient`: Third person omniscient - can reveal any character's thoughts
+- **Tone** (optional): Story mood to maintain - dark, light, comedic, serious, epic
+- **Style Reference** (optional): Write in the style of this author/book (e.g., "金庸", "Brandon Sanderson")
+
+**Style Notes**: If POV, Tone, or Style Reference are provided, they define the narrative voice. Maintain consistent tone throughout. For style references, emulate that author's techniques (pacing, dialogue style, description density) without copying specific content.
 
 If revising, you will also receive:
 - **Previous Version**: Your earlier draft

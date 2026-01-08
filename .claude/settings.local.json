@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Edit",
+      "Write",
+      "Read",
       "Bash(ssh:*)",
       "Bash(scp:*)",
       "Bash(curl:*)",
@@ -16,7 +19,9 @@
       "Bash(git remote set-url:*)",
       "Bash(python:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase B: Human-in-the-loop feedback system\n\nDiscord Bot:\n- Added /novel feedback command for outline/chapter revisions\n- Added /novel approve command for approval workflow\n- Added /novel critique command for Elrond evaluation\n- Updated /novel write to check outline approval status\n\nNovelManager:\n- Added storeFeedback\\(\\) method\n- Added getLatestFeedback\\(\\) method\n- Added approveOutline\\(\\) method\n- Added approveChapter\\(\\) method\n- Added markCompleted\\(\\) method\n- Added outlineApproved field to metadata\n\nN8N Workflow:\n- Added n8n-workflow-v2.json with all 6 routes documented\n- revise_outline and revise_chapter paths configured\n\nEnvironment:\n- Added .env.example for deployment\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(python3:*)",
+      "Bash(git -C \"c:/Users/22317/Documents/Coding/Iluvatar-2.0\" diff src/core/state-manager.js)"
     ]
   }
 }
