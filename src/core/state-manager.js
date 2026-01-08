@@ -234,9 +234,15 @@ class StateManager {
     const hashValue = await this.redis.hget(dataKey, key);
     if (hashValue && hashValue !== 'null') {
       try {
-        const parsed = JSON.parse(hashValue);
-        // Only return if it's a real value (not null/undefined/empty object for outline)
-        if (parsed !== null && parsed !== undefined) {
+        let parsed = JSON.parse(hashValue);
+        // Only return if it's a real value (not null/undefined/empty object)
+        // For chapters/critiques, empty object {} should fall back to N8N keys
+        const isEmpty = typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length === 0;
+        if (parsed !== null && parsed !== undefined && !isEmpty) {
+          // Extract Claude text for outline and chapters
+          if (key === 'outline' || key.startsWith('chapter')) {
+            parsed = this._extractClaudeText(parsed);
+          }
           return parsed;
         }
       } catch {
@@ -255,13 +261,56 @@ class StateManager {
     const simpleValue = await this.redis.get(simpleKey);
     if (simpleValue) {
       try {
-        return JSON.parse(simpleValue);
+        let parsed = JSON.parse(simpleValue);
+        // Extract Claude text for outline
+        if (key === 'outline') {
+          parsed = this._extractClaudeText(parsed);
+        }
+        return parsed;
       } catch {
         return simpleValue;
       }
     }
 
     return null;
+  }
+
+  /**
+   * Extract text content from Claude's raw API response
+   *
+   * Claude returns: { data: [{ type: "thinking", ... }, { type: "text", text: "..." }] }
+   * We need to extract just the text content for chapters.
+   *
+   * @param {Object} rawResponse - Raw Claude API response
+   * @returns {Object} Normalized chapter object with content field
+   * @private
+   */
+  _extractClaudeText(rawResponse) {
+    // If it already has 'content' field, it's already normalized
+    if (rawResponse.content) {
+      return rawResponse;
+    }
+
+    // Check for Claude API response format: { data: [{ type: "text", text: "..." }] }
+    if (rawResponse.data && Array.isArray(rawResponse.data)) {
+      const textItem = rawResponse.data.find(item => item.type === 'text');
+      if (textItem && textItem.text) {
+        // Parse chapter markers from text
+        const text = textItem.text;
+        const titleMatch = text.match(/^#\s*(.+)$/m);
+
+        return {
+          title: titleMatch ? titleMatch[1].trim() : 'Untitled',
+          content: text,
+          wordCount: text.length,  // Approximate
+          raw: text,
+          savedAt: new Date().toISOString()
+        };
+      }
+    }
+
+    // Fallback: return as-is
+    return rawResponse;
   }
 
   /**
@@ -288,14 +337,19 @@ class StateManager {
     // Fetch all values
     const result = {};
     for (const key of keys) {
-      // Extract chapter number from key: "novel:xyz:chapter:1" -> "1"
+      // Extract chapter number from key: "novel:xyz:chapter:1" -> 1
       const parts = key.split(':');
-      const num = parts[parts.length - 1];
+      const num = parseInt(parts[parts.length - 1], 10);  // Convert to integer for consistent access
 
       const value = await this.redis.get(key);
       if (value) {
         try {
-          result[num] = JSON.parse(value);
+          let parsed = JSON.parse(value);
+          // For chapters, extract text from Claude's raw response format
+          if (type === 'chapters') {
+            parsed = this._extractClaudeText(parsed);
+          }
+          result[num] = parsed;
         } catch {
           result[num] = value;
         }
@@ -364,6 +418,52 @@ class StateManager {
 
   _sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get previous chapter plans for a novel
+   * Returns chapter plans for chapters 1 through (targetChapter - 1)
+   *
+   * @param {string} novelId - The novel ID
+   * @param {number} targetChapter - The chapter being planned (we get all before this)
+   * @returns {Promise<Object>} - { 1: planText, 2: planText, ... }
+   */
+  async getPreviousChapterPlans(novelId, targetChapter) {
+    const scope = `novel:${novelId}`;
+    const { dataKey } = getScopeKeys(scope);
+
+    // Get all fields from the hash
+    const allData = await this.redis.hgetall(dataKey);
+    if (!allData) return {};
+
+    const plans = {};
+
+    // Extract chapterPlan_X fields for chapters before targetChapter
+    for (const [field, value] of Object.entries(allData)) {
+      const match = field.match(/^chapterPlan_(\d+)$/);
+      if (match) {
+        const chapterNum = parseInt(match[1], 10);
+        if (chapterNum < targetChapter) {
+          try {
+            // Parse the stored value
+            let parsed = JSON.parse(value);
+            // Extract text from Claude API response format if needed
+            if (parsed.data && Array.isArray(parsed.data)) {
+              const textItem = parsed.data.find(item => item.type === 'text');
+              plans[chapterNum] = textItem?.text || value;
+            } else if (typeof parsed === 'string') {
+              plans[chapterNum] = parsed;
+            } else {
+              plans[chapterNum] = JSON.stringify(parsed);
+            }
+          } catch {
+            plans[chapterNum] = value;
+          }
+        }
+      }
+    }
+
+    return plans;
   }
 
   /**
