@@ -969,6 +969,23 @@ class IluvatarBot {
       const writtenChapters = Object.keys(state.chapters || {}).map(Number).filter(n => !isNaN(n));
       const latestChapter = writtenChapters.length > 0 ? Math.max(...writtenChapters) : 0;
       chapterNum = latestChapter + 1;
+
+      // Check if chapter plan exists (REQUIRED before writing)
+      const chapterPlan = await this.stateManager.get(`novel:${novelId}`, `chapterPlan_${chapterNum}`);
+      if (!chapterPlan) {
+        await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('📋 Chapter Plan Required')
+            .setColor(0xf39c12)
+            .setDescription(`You need to plan chapter ${chapterNum} before writing it.`)
+            .addFields(
+              { name: 'Next Step', value: `Use \`/novel plan_chapter chapter:${chapterNum}\` to create a detailed plan first.` },
+              { name: 'Why?', value: 'Detailed chapter planning improves story consistency and quality.' }
+            )]
+        });
+        return;
+      }
+
       nextStep = `Frodo will write chapter ${chapterNum}`;
     }
 
