@@ -31,7 +31,8 @@
 | Phase 0: Repository Setup | COMPLETED | Cleaned up, reorganized, pushed to GitHub |
 | Phase A: Infrastructure | COMPLETED | Core modules, Discord bot, N8N workflow, agent prompts |
 | Phase B: Integration Testing | COMPLETED | Channel-aware bot, Story Bible, Discord callbacks, N8N fixes |
-| Phase C: Data Pipeline | NOT STARTED | Preference collection |
+| Phase B2: Discord Bot Overhaul | COMPLETED | 25 slash commands, bug fixes, ML data collection prep |
+| Phase C: Data Pipeline | IN PROGRESS | Foundation laid - DPO storage, training export ready |
 | Phase D: First Fine-tune | NOT STARTED | LoRA on Qwen2.5 |
 | Phase E: RLHF Loop | NOT STARTED | DPO training |
 
@@ -173,10 +174,20 @@ Novel contributions being explored:
    - ✅ B.10: N8N prompt builders fixed (novelId/callback preserved through Load nodes)
    - ✅ B.11: Language enforcement (Chinese novels generate Chinese content)
    - ✅ B.12: Chapter generation verified (saves to correct Redis keys)
-4. **Phase C (NEXT)**: Data pipeline for preference collection
-   - C.1: Export chapter data for DPO training pairs
-   - C.2: Collect human preference signals via Discord reactions
-   - C.3: Store training data in S3
+4. ✅ **Phase B2 Complete**: Discord Bot Overhaul (25 slash commands)
+   - ✅ B2.1: Critical bug fixes (revise action type, bibleContext for outline revision)
+   - ✅ B2.2: Quality fixes (bibleContext for plan_book)
+   - ✅ B2.3: Enhanced `/novel create` (13 genres, pov, tone, style_reference, auto_critique)
+   - ✅ B2.4: QoL commands (/novel next, help, settings, preview, improved status)
+   - ✅ B2.5: Export functionality (/novel export markdown/txt)
+   - ✅ B2.6: ML data collection prep (DPO pair storage, training export formats)
+   - See full plan: `.claude/plans/federated-questing-lollipop.md`
+5. **Phase C (IN PROGRESS)**: Data pipeline for preference collection
+   - ✅ C.1: DPO pair storage infrastructure (storeRevisionPair in NovelManager)
+   - ✅ C.2: Training export formats (/novel export format:dpo|sft|reward)
+   - C.3: Collect human preference signals via Discord reactions (deferred)
+   - C.4: Store training data in S3 (next step)
+   - C.5: End-to-end test: generate novel → collect preferences → export training data
 
 ---
 
@@ -214,6 +225,59 @@ Track concepts explained during pair programming sessions to avoid repetition.
 | **Cascade Regeneration** | When you revise an earlier chapter, later chapters may need to be regenerated to maintain consistency. Optional - user can skip if changes don't affect continuity. |
 | **Dual-Key Fallback** | StateManager now checks both Redis hash fields (`HGET novel:xyz:data outline`) AND simple string keys (`GET novel:xyz:outline`). This bridges N8N (which only supports SET/GET) with the bot's hash-based storage. For chapters/critiques, it aggregates individual keys (novel:xyz:chapter:1, :2, :3) into the expected object format. |
 | **N8N Data Flow Issue** | When N8N workflow passes through a "Load" node (Load Outline, Load Chapter), the original webhook data (novelId, metadata, callback) is lost. Solution: Use `$('Webhook').first().json.body` to get original data, not `$input.first().json`. |
+| **DPO (Direct Preference Optimization)** | Training method that learns from (chosen, rejected) pairs. When user revises a chapter, we save original → rejected, revised → chosen. The model learns to prefer the revised version. No separate reward model needed. |
+| **SFT (Supervised Fine-Tuning)** | Basic fine-tuning on (instruction, output) pairs. We export chapters with their prompts as SFT training data. First step before DPO. |
+
+---
+
+## Discord Bot Commands (25 total)
+
+All commands are under `/novel`. Use in either **Library** channel (novel management) or **Novel** channel (writing operations).
+
+### Novel Management (Library Channel)
+| Command | Description |
+|---------|-------------|
+| `/novel create` | Create new novel with genre, premise, language, pov, tone, style |
+| `/novel list` | List all novels in the system |
+| `/novel delete` | Delete a novel and its channel |
+| `/novel help` | Show all commands with descriptions |
+
+### Novel Information (Any Channel)
+| Command | Description |
+|---------|-------------|
+| `/novel status` | Check novel status with progress bar and stats |
+| `/novel bible` | View story bible (characters, plot threads, etc.) |
+| `/novel next` | Get guided next action based on current state |
+| `/novel preview` | Preview upcoming chapter from outline |
+| `/novel settings` | View or update novel settings |
+
+### Reading Content (Any Channel)
+| Command | Description |
+|---------|-------------|
+| `/novel read_chapter` | Read a specific chapter |
+| `/novel read_outline` | Read the full outline |
+| `/novel read_section` | Read a range of chapters |
+| `/novel read_all` | Read entire novel (max 20 chapters) |
+
+### Writing Operations (Novel Channel)
+| Command | Description |
+|---------|-------------|
+| `/novel write` | Generate outline or write next chapter |
+| `/novel approve` | Approve outline or chapter |
+| `/novel feedback` | Submit revision feedback |
+| `/novel critique` | Request Elrond evaluation |
+| `/novel plan_chapter` | Plan detailed chapter(s) |
+| `/novel plan_book` | Re-plan entire book |
+| `/novel recall` | Start revision of earlier content |
+| `/novel cascade` | Regenerate chapters after revision |
+| `/novel skip_cascade` | Keep later chapters as-is |
+
+### Control & Export (Novel Channel)
+| Command | Description |
+|---------|-------------|
+| `/novel pause` | Pause novel generation |
+| `/novel resume` | Resume paused novel |
+| `/novel export` | Export novel (markdown/txt) or training data (dpo/sft/reward) |
 
 ---
 
@@ -263,6 +327,142 @@ The `start-n8n.sh` script loads:
 - API keys from `~/.n8n/.env`
 
 ---
+
+## Bug Fixed: /novel read_outline "Internal Server Error" (Jan 2026)
+
+**Status**: RESOLVED
+
+**Root Cause**: Discord API returns HTTP 500 when embed descriptions contain Chinese text chunks larger than ~3000 characters, even though the documented limit is 4096. This appears to be an undocumented behavior related to UTF-8 encoding of Chinese characters.
+
+**Fix Applied**:
+1. Created new `sendContentAsFollowUps()` method that uses smaller 2000-char chunks
+2. First chunk sent via `editReply()`, subsequent chunks via `followUp()` (separate messages)
+3. Updated `handleReadOutline()` to use the new method
+
+**Key Learning**: For Chinese/CJK text in Discord embeds, use 2000-char chunks instead of 4000 to avoid Discord's undocumented size limits.
+
+**Files Modified**:
+- `src/orchestrator/discord-bot.js` - Added `sendContentAsFollowUps()` method, updated `handleReadOutline()`
+
+---
+
+## Feature Added: Critique-Based Revision Flow (Jan 2026)
+
+**Status**: WORKING
+
+The `/novel feedback` command now supports automatic loading of Elrond's stored critique.
+
+**Changes**:
+1. Added `use_critique` option (defaults to `true`) - loads Elrond's stored critique as revision instructions
+2. Added `chapter` option - specify which chapter to revise (defaults to latest written chapter)
+3. Auto-detects latest written chapter from `state.chapters` instead of relying on `metadata.currentChapter`
+
+**Flow**:
+1. `/novel write` → Frodo writes chapter → saves to `novel:xyz:chapter:1`
+2. `/novel critique` → Elrond reads chapter, generates critique → saves to `novel:xyz:critique:1`
+3. `/novel feedback` (with `use_critique:true`) → Loads stored critique → Triggers Frodo revision
+4. Frodo revises → **overwrites** `novel:xyz:chapter:1` with revised version
+5. `/novel critique` → Reads revised version (same key, updated content)
+
+**N8N Fix Required**: Updated "Build Frodo Prompt (revise)" node to use correct node references:
+- `$('Load Current Chapter').first().json` (not "Load Novel Data")
+- `$('Load Outline for Context').first().json` (not assumed names)
+
+**Files Modified**:
+- `src/orchestrator/discord-bot.js` - Added `chapter` and `use_critique` options to feedback command
+
+---
+
+## Bug Fixed: /novel approve and /novel next Not Detecting Chapters (Jan 2026)
+
+**Status**: RESOLVED
+
+**Root Cause**: N8N saves chapters directly to Redis keys (`novel:xyz:chapter:1`) but doesn't update the bot's metadata hash (`metadata.currentChapter`). The `handleApprove` and `handleNext` commands relied on `metadata.currentChapter`, which remained 0 even after chapters were written.
+
+**Fix Applied**:
+1. **`handleApprove`** and **`handleNext`** now derive chapter count from actual `state.chapters` keys instead of `metadata.currentChapter`
+2. Added `syncChapterMetadata()` method to `NovelManager` for N8N to call after saving chapters
+3. Added HTTP callback server on port 3001 with `/sync-chapter` endpoint
+
+**Code Pattern Used**:
+```javascript
+// Get actual chapter count from state.chapters (N8N saves directly, metadata may be stale)
+const writtenChapters = Object.keys(state.chapters || {}).map(Number).filter(n => !isNaN(n));
+const latestChapter = writtenChapters.length > 0 ? Math.max(...writtenChapters) : 0;
+```
+
+**N8N Integration (Optional but Recommended)**:
+Add HTTP Request node after both `Save Chapter to Redis` and `Save Chapter to Redis (revise)`:
+- **Method**: POST
+- **URL**: `http://localhost:3001/sync-chapter`
+- **Body**: `{"novelId": "{{ $('Webhook').first().json.body.novelId }}", "chapterNum": {{ $('Webhook').first().json.body.chapterNum }}}`
+
+**Files Modified**:
+- `src/orchestrator/discord-bot.js` - Fixed `handleApprove`, `handleNext`, added callback server
+- `src/core/novel-manager.js` - Added `syncChapterMetadata()` method
+
+---
+
+## ⚠️ STABLE COMPONENTS - DO NOT MODIFY WITHOUT REASON
+
+The following components are **working correctly** and should NOT be modified unless there's a specific bug to fix:
+
+| Component | File | Status |
+|-----------|------|--------|
+| Discord bot core | `src/orchestrator/discord-bot.js` | ✅ Stable - 25 commands working |
+| State manager | `src/core/state-manager.js` | ✅ Stable - dual-key fallback, Claude text extraction |
+| Novel manager | `src/core/novel-manager.js` | ✅ Stable - lifecycle, bible parsing |
+| Bible retriever | `src/core/bible-retriever.js` | ✅ Stable - semantic search |
+| Agent prompts | `src/agent-prompts/*.md` | ✅ Stable - Gandalf, Frodo, Elrond |
+| N8N workflow | http://50.18.245.194:5678 | ⚠️ Partially stable - needs Fix 4 for bible updates |
+
+**Before modifying any stable component:**
+1. Understand WHY it was built the way it was
+2. Test the existing behavior first
+3. Make minimal changes to fix the specific issue
+4. Don't refactor or "improve" working code
+
+---
+
+## Story Bible Status (Jan 2026)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Gandalf outputs `## STORY BIBLE` | ✅ Working | In prompt |
+| Frodo outputs `## BIBLE UPDATES` | ✅ Working | In prompt |
+| Parse Story Bible from outline | ✅ Working | `/novel bible section:📥 Import from Outline` |
+| N8N auto-parse from Gandalf | ❌ Not implemented | Apply Fix 4a-4b in N8N |
+| N8N parse Frodo's BIBLE UPDATES | ❌ Not implemented | Apply Fix 4c-4f in N8N |
+
+**Current workaround**: After outline is generated, manually run `/novel bible section:📥 Import from Outline` to populate the Story Bible.
+
+---
+## N8N Workflow Restructure (Jan 2026)
+
+**Problem**: `plan_chapter` action was overwriting the novel outline because both `outline` and `plan_chapter` flows went through the same Gandalf → Parse Bible → Save outline chain.
+
+**Fix Applied**:
+1. Added **Route Gandalf Output** Switch node after Gandalf
+2. Routes `outline` action → Parse Bible → Save Story Bible → Save outline
+3. Routes `plan_chapter` action → Save Chapter Plan (skips outline save)
+
+**Additional Changes**:
+- Added `getPreviousChapterPlans()` method to StateManager
+- Discord bot fetches previous chapter plans and sends to N8N as `previousPlansContext`
+- Updated Build Gandalf Plan Prompt node to include previous plans in prompt
+
+**Completed (Jan 8, 2026)**:
+- ✅ Discord bot now REQUIRES chapter plan before `/novel write`
+- ✅ `handleWrite()` checks for `chapterPlan_{chapterNum}` in Redis
+- ✅ Shows friendly error with `/novel plan_chapter` suggestion if missing
+
+**Pending N8N Work**:
+- Add `Load Chapter Plan` Redis node before `Build Frodo Prompt`
+- Update `Build Frodo Prompt` to include chapter plan in Frodo's prompt
+- See `temp_n8n_frodo_prompt_update.js` for updated code
+
+---
+
 
 ## Resume Instructions
 
