@@ -971,7 +971,7 @@ class IluvatarBot {
       chapterNum = latestChapter + 1;
 
       // Check if chapter plan exists (REQUIRED before writing)
-      const chapterPlan = await this.stateManager.get(`novel:${novelId}`, `chapterPlan_${chapterNum}`);
+      const chapterPlan = await this.novelManager.state.get(`novel:${novelId}`, `chapterPlan_${chapterNum}`);
       if (!chapterPlan) {
         await interaction.editReply({
           embeds: [new EmbedBuilder()
