@@ -1560,16 +1560,31 @@ class IluvatarBot {
       }
     }
 
-    // Get previous chapter plans for context
+    // Get previous chapter plans for context (last 2 chapters max)
     let previousPlansContext = null;
     if (chapterNum > 1) {
       try {
-        const previousPlans = await this.stateManager.getPreviousChapterPlans(novelId, chapterNum);
+        const previousPlans = {};
+        // Get at most 2 previous chapter plans
+        const startChapter = Math.max(1, chapterNum - 2);
+        for (let i = startChapter; i < chapterNum; i++) {
+          // state.get() falls back to string key: novel:{novelId}:chapterPlan_{i}
+          const plan = await this.novelManager.state.get(`novel:${novelId}`, `chapterPlan_${i}`);
+          if (plan) {
+            // Extract text from Claude API response format if needed
+            let planText = typeof plan === 'string' ? plan : JSON.stringify(plan);
+            if (typeof plan === 'object' && plan.data && Array.isArray(plan.data)) {
+              const textBlock = plan.data.find(item => item.type === 'text');
+              planText = textBlock?.text || planText;
+            }
+            previousPlans[i] = planText;
+          }
+        }
         if (Object.keys(previousPlans).length > 0) {
           // Format previous plans for the prompt
           const planEntries = Object.entries(previousPlans)
             .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
-            .map(([num, plan]) => '### Chapter ' + num + ' Plan\n' + plan)
+            .map(([num, plan]) => `### Chapter ${num} Plan\n${plan}`)
             .join('\n\n');
           previousPlansContext = '## PREVIOUS CHAPTER PLANS\n' + planEntries;
         }

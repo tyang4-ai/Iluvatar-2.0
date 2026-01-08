@@ -105,10 +105,14 @@ class NovelManager {
       title: config.title || 'Untitled Novel',
       genre: config.genre || 'xianxia',
       language: config.language || 'zh',
-      pov: config.pov || 'protagonist',
+      pov: config.pov || 'third_limited',
       premise: config.premise || '',
       targetChapters: config.targetChapters || 100,
       targetWordsPerChapter: config.targetWordsPerChapter || 3000,
+      // Style customization
+      tone: config.tone || null,                    // dark, light, comedic, serious, epic
+      styleReference: config.styleReference || null, // "Write like X author"
+      autoCritique: config.autoCritique || false,   // Auto-run Elrond after each chapter
       status: NOVEL_STATUS.PLANNING,
       currentChapter: 0,
       outlineApproved: false,
@@ -186,18 +190,94 @@ class NovelManager {
       return null;
     }
 
+    // Merge chapters from hash with individual chapter keys (N8N saves to individual keys)
+    const mergedChapters = { ...(chapters || {}) };
+    const individualChapters = await this.getIndividualChapters(novelId);
+    for (const [chapterNum, chapterData] of Object.entries(individualChapters)) {
+      // Individual keys take precedence (N8N's latest writes)
+      mergedChapters[chapterNum] = chapterData;
+    }
+
+    // Similarly merge critiques
+    const mergedCritiques = { ...(critiques || {}) };
+    const individualCritiques = await this.getIndividualCritiques(novelId);
+    for (const [chapterNum, critiqueData] of Object.entries(individualCritiques)) {
+      mergedCritiques[chapterNum] = critiqueData;
+    }
+
     return {
       metadata,
       outline,
-      chapters: chapters || {},
-      critiques: critiques || {},
+      chapters: mergedChapters,
+      critiques: mergedCritiques,
       revisions: revisions || {},
       stats: {
-        chaptersWritten: Object.keys(chapters || {}).length,
-        chaptersReviewed: Object.keys(critiques || {}).length,
+        chaptersWritten: Object.keys(mergedChapters).length,
+        chaptersReviewed: Object.keys(mergedCritiques).length,
         chaptersRevised: Object.keys(revisions || {}).length
       }
     };
+  }
+
+  /**
+   * Get chapters from individual Redis keys (N8N saves chapters this way)
+   * Keys are like: novel:xyz:chapter:1, novel:xyz:chapter:2, etc.
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Object>} Object with chapter numbers as keys
+   */
+  async getIndividualChapters(novelId) {
+    const pattern = `novel:${novelId}:chapter:*`;
+    const keys = await this.state.redis.keys(pattern);
+    const chapters = {};
+
+    for (const key of keys) {
+      const match = key.match(/chapter:(\d+)$/);
+      if (match) {
+        const chapterNum = match[1];
+        const data = await this.state.redis.get(key);
+        if (data) {
+          try {
+            chapters[chapterNum] = JSON.parse(data);
+          } catch {
+            // If not JSON, wrap the string
+            chapters[chapterNum] = { content: data };
+          }
+        }
+      }
+    }
+
+    return chapters;
+  }
+
+  /**
+   * Get critiques from individual Redis keys (N8N saves critiques this way)
+   * Keys are like: novel:xyz:critique:1, novel:xyz:critique:2, etc.
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Object>} Object with chapter numbers as keys
+   */
+  async getIndividualCritiques(novelId) {
+    const pattern = `novel:${novelId}:critique:*`;
+    const keys = await this.state.redis.keys(pattern);
+    const critiques = {};
+
+    for (const key of keys) {
+      const match = key.match(/critique:(\d+)$/);
+      if (match) {
+        const chapterNum = match[1];
+        const data = await this.state.redis.get(key);
+        if (data) {
+          try {
+            critiques[chapterNum] = JSON.parse(data);
+          } catch {
+            critiques[chapterNum] = { content: data };
+          }
+        }
+      }
+    }
+
+    return critiques;
   }
 
   /**
@@ -332,6 +412,33 @@ class NovelManager {
     });
 
     console.log(`[NovelManager] Saved chapter ${chapterNum} for ${novelId}`);
+  }
+
+  /**
+   * Sync metadata after N8N saves a chapter directly to Redis
+   * This updates currentChapter and stats based on actual chapter keys
+   *
+   * @param {string} novelId - Novel ID
+   * @param {number} chapterNum - Chapter number that was saved
+   */
+  async syncChapterMetadata(novelId, chapterNum) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      // Update currentChapter to the max of what we have
+      metadata.currentChapter = Math.max(metadata.currentChapter || 0, chapterNum);
+      metadata.status = NOVEL_STATUS.REVIEWING;
+      metadata.updatedAt = new Date().toISOString();
+
+      return { metadata };
+    });
+
+    console.log(`[NovelManager] Synced chapter metadata for ${novelId}: currentChapter=${chapterNum}`);
   }
 
   /**
@@ -560,6 +667,31 @@ class NovelManager {
   }
 
   /**
+   * Update a single setting for a novel
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} field - Metadata field to update
+   * @param {*} value - New value
+   */
+  async updateSetting(novelId, field, value) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const metadata = currentState.metadata;
+      if (!metadata) {
+        throw new Error(`Novel not found: ${novelId}`);
+      }
+
+      metadata[field] = value;
+      metadata.updatedAt = new Date().toISOString();
+
+      return { metadata };
+    });
+
+    console.log(`[NovelManager] Updated setting ${field}=${value} for novel ${novelId}`);
+  }
+
+  /**
    * Get next chapter number to write
    *
    * @param {string} novelId - Novel ID
@@ -642,6 +774,15 @@ class NovelManager {
   async approveChapter(novelId, chapterNum) {
     const scope = this.getScope(novelId);
 
+    // First check if chapter exists (either in hash or individual key)
+    const individualChapters = await this.getIndividualChapters(novelId);
+    const hashChapters = await this.state.get(scope, 'chapters') || {};
+
+    const chapterExists = individualChapters[chapterNum] || hashChapters[chapterNum];
+    if (!chapterExists) {
+      throw new Error(`Chapter ${chapterNum} not found`);
+    }
+
     await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
       const metadata = currentState.metadata;
       const chapters = currentState.chapters || {};
@@ -650,19 +791,17 @@ class NovelManager {
         throw new Error(`Novel not found: ${novelId}`);
       }
 
+      // Initialize chapter entry if it doesn't exist in hash (N8N stored it separately)
       if (!chapters[chapterNum]) {
-        throw new Error(`Chapter ${chapterNum} not found`);
+        chapters[chapterNum] = {};
       }
 
       // Mark chapter as approved
       chapters[chapterNum].approved = true;
       chapters[chapterNum].approvedAt = new Date().toISOString();
 
-      // Advance current chapter if this was the current one
-      if (chapterNum === metadata.currentChapter) {
-        metadata.currentChapter = chapterNum + 1;
-      }
-
+      // Update current chapter to move past this one
+      metadata.currentChapter = Math.max(metadata.currentChapter || 0, chapterNum);
       metadata.status = NOVEL_STATUS.WRITING;
       metadata.updatedAt = new Date().toISOString();
 
@@ -1040,6 +1179,78 @@ class NovelManager {
   }
 
   /**
+   * Import Story Bible from outline text
+   * Parses the STORY BIBLE section from Gandalf's outline output and saves to Redis
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} outlineText - Raw outline text (optional - if not provided, reads from Redis)
+   * @returns {Promise<Object>} Import result with counts
+   */
+  async importStoryBibleFromOutline(novelId, outlineText = null) {
+    const scope = this.getScope(novelId);
+
+    // If no outline text provided, get it from Redis
+    if (!outlineText) {
+      const outline = await this.state.get(scope, 'outline');
+      if (!outline) {
+        throw new Error('No outline found for this novel');
+      }
+      // Outline could be stored in various formats:
+      // 1. Plain string
+      // 2. Object with .raw property
+      // 3. Object with .content property
+      // 4. Claude API response format: { data: [{ type: "text", text: "..." }] }
+      if (typeof outline === 'string') {
+        outlineText = outline;
+      } else if (outline.raw) {
+        outlineText = outline.raw;
+      } else if (outline.content) {
+        outlineText = outline.content;
+      } else if (outline.data && Array.isArray(outline.data)) {
+        // Claude API response format - find the text block
+        const textBlock = outline.data.find(item => item.type === 'text');
+        outlineText = textBlock?.text || JSON.stringify(outline);
+      } else {
+        outlineText = JSON.stringify(outline);
+      }
+    }
+
+    // Parse the outline
+    const parsedBible = parseStoryBibleFromOutline(outlineText);
+
+    // Check if we got anything
+    const charCount = Object.keys(parsedBible.characters).length;
+    const threadCount = parsedBible.plotThreads.length;
+    const factCount = parsedBible.worldFacts.length;
+    const chekhovCount = parsedBible.chekhovs.length;
+
+    if (charCount === 0 && threadCount === 0 && factCount === 0 && chekhovCount === 0) {
+      console.log(`[NovelManager] No Story Bible data found in outline for ${novelId}`);
+      return {
+        success: false,
+        message: 'No Story Bible section found in outline',
+        counts: { characters: 0, plotThreads: 0, worldFacts: 0, chekhovs: 0 }
+      };
+    }
+
+    // Save to Redis using updateStoryBible
+    await this.updateStoryBible(novelId, parsedBible);
+
+    console.log(`[NovelManager] Imported Story Bible for ${novelId}: ${charCount} characters, ${threadCount} threads, ${factCount} facts, ${chekhovCount} chekhovs`);
+
+    return {
+      success: true,
+      message: `Imported ${charCount} characters, ${threadCount} plot threads, ${factCount} world facts, ${chekhovCount} Chekhov's guns`,
+      counts: {
+        characters: charCount,
+        plotThreads: threadCount,
+        worldFacts: factCount,
+        chekhovs: chekhovCount
+      }
+    };
+  }
+
+  /**
    * Mark a Chekhov's gun as paid off
    *
    * @param {string} novelId - Novel ID
@@ -1140,6 +1351,405 @@ class NovelManager {
 
     console.log(`[NovelManager] Updated story bible for ${novelId}`);
   }
+
+  // ==================== ML Training Data Methods (Phase 6) ====================
+
+  /**
+   * Store a revision pair for DPO training
+   * Called BEFORE triggering revision to capture original content
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} pair - Revision pair data
+   * @param {string} pair.target - 'outline' or 'chapter'
+   * @param {number} [pair.chapterNum] - Chapter number (if target is 'chapter')
+   * @param {string} pair.original - Original content before revision
+   * @param {string} pair.feedback - User's revision feedback
+   * @param {Object} pair.metadata - Novel metadata at time of revision
+   */
+  async storeRevisionPair(novelId, pair) {
+    const scope = this.getScope(novelId);
+    const timestamp = new Date().toISOString();
+
+    const revisionRecord = {
+      id: `rev-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      target: pair.target,
+      chapterNum: pair.chapterNum || null,
+      original: pair.original,
+      feedback: pair.feedback,
+      metadata: {
+        genre: pair.metadata.genre,
+        language: pair.metadata.language,
+        pov: pair.metadata.pov,
+        tone: pair.metadata.tone,
+        styleReference: pair.metadata.styleReference
+      },
+      timestamp,
+      revised: null  // Will be filled after revision completes
+    };
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const revisionPairs = currentState.revisionPairs || [];
+      revisionPairs.push(revisionRecord);
+      return { revisionPairs };
+    });
+
+    console.log(`[NovelManager] Stored revision pair ${revisionRecord.id} for ${novelId}`);
+    return revisionRecord.id;
+  }
+
+  /**
+   * Complete a revision pair by adding the revised content
+   * Called AFTER revision completes
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} revisionId - ID of the revision record
+   * @param {string} revisedContent - The revised content
+   */
+  async completeRevisionPair(novelId, revisionId, revisedContent) {
+    const scope = this.getScope(novelId);
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const revisionPairs = currentState.revisionPairs || [];
+      const pair = revisionPairs.find(p => p.id === revisionId);
+      if (pair) {
+        pair.revised = revisedContent;
+        pair.completedAt = new Date().toISOString();
+      }
+      return { revisionPairs };
+    });
+
+    console.log(`[NovelManager] Completed revision pair ${revisionId} for ${novelId}`);
+  }
+
+  /**
+   * Store a user preference signal (from reactions or explicit rating)
+   *
+   * @param {string} novelId - Novel ID
+   * @param {Object} pref - Preference data
+   * @param {string} pref.type - 'reaction' or 'rating'
+   * @param {number} pref.chapterNum - Chapter number
+   * @param {number} pref.score - Score (-1 for 👎, 1 for 👍, or 1-10 for rating)
+   * @param {string} [pref.userId] - Discord user ID
+   * @param {string} [pref.comment] - Optional comment
+   */
+  async storePreference(novelId, pref) {
+    const scope = this.getScope(novelId);
+    const timestamp = new Date().toISOString();
+
+    const prefRecord = {
+      id: `pref-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type: pref.type,
+      chapterNum: pref.chapterNum,
+      score: pref.score,
+      userId: pref.userId || null,
+      comment: pref.comment || null,
+      timestamp
+    };
+
+    await this.state.writeWithRetry('novel-manager', scope, async (currentState) => {
+      const preferences = currentState.preferences || [];
+      preferences.push(prefRecord);
+      return { preferences };
+    });
+
+    console.log(`[NovelManager] Stored preference ${prefRecord.id} for ${novelId} ch${pref.chapterNum}`);
+  }
+
+  /**
+   * Get all revision pairs for a novel (for DPO export)
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Array>} Array of revision pairs
+   */
+  async getRevisionPairs(novelId) {
+    const scope = this.getScope(novelId);
+    const pairs = await this.state.get(scope, 'revisionPairs');
+    return pairs || [];
+  }
+
+  /**
+   * Get all preferences for a novel (for reward model export)
+   *
+   * @param {string} novelId - Novel ID
+   * @returns {Promise<Array>} Array of preferences
+   */
+  async getPreferences(novelId) {
+    const scope = this.getScope(novelId);
+    const prefs = await this.state.get(scope, 'preferences');
+    return prefs || [];
+  }
+
+  /**
+   * Get training data export for a novel
+   *
+   * @param {string} novelId - Novel ID
+   * @param {string} format - 'dpo', 'sft', or 'reward'
+   * @returns {Promise<Array>} Training data in requested format
+   */
+  async getTrainingData(novelId, format = 'dpo') {
+    const state = await this.getNovelState(novelId);
+    if (!state) {
+      throw new Error(`Novel not found: ${novelId}`);
+    }
+
+    const { metadata, chapters, outline, revisionPairs = [], preferences = [] } = state;
+
+    switch (format) {
+      case 'dpo':
+        // Return completed revision pairs as (chosen, rejected)
+        return revisionPairs
+          .filter(p => p.revised && p.original)
+          .map(p => ({
+            novel_id: novelId,
+            target: p.target,
+            chapter_num: p.chapterNum,
+            chosen: p.revised,
+            rejected: p.original,
+            feedback: p.feedback,
+            metadata: p.metadata,
+            timestamp: p.timestamp
+          }));
+
+      case 'sft':
+        // Return chapters with metadata for supervised fine-tuning
+        const chapterList = [];
+        if (chapters) {
+          const chapterNums = Object.keys(chapters).map(k => parseInt(k)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+          for (const num of chapterNums) {
+            const ch = chapters[num];
+            const content = typeof ch === 'string' ? ch : (ch.content || ch.text || '');
+            chapterList.push({
+              novel_id: novelId,
+              chapter_num: num,
+              instruction: `Write chapter ${num} of a ${metadata.tone || ''} ${metadata.genre} novel in ${metadata.language === 'zh' ? 'Chinese' : 'English'}.`,
+              input: outline?.chapters?.[num - 1]?.summary || '',
+              output: content,
+              metadata: {
+                genre: metadata.genre,
+                language: metadata.language,
+                pov: metadata.pov,
+                tone: metadata.tone,
+                styleReference: metadata.styleReference
+              }
+            });
+          }
+        }
+        return chapterList;
+
+      case 'reward':
+        // Return chapters with critique scores and user preferences
+        const rewardData = [];
+        if (chapters) {
+          const chapterNums = Object.keys(chapters).map(k => parseInt(k)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+          for (const num of chapterNums) {
+            const ch = chapters[num];
+            const content = typeof ch === 'string' ? ch : (ch.content || ch.text || '');
+            const critique = state.critiques?.[num];
+            const chapterPrefs = preferences.filter(p => p.chapterNum === num);
+
+            // Calculate aggregate preference score
+            const reactionVotes = chapterPrefs.filter(p => p.type === 'reaction');
+            const ratings = chapterPrefs.filter(p => p.type === 'rating');
+
+            rewardData.push({
+              novel_id: novelId,
+              chapter_num: num,
+              chapter_text: content,
+              critique_score: critique?.score || null,
+              critique_text: critique?.text || critique?.content || null,
+              reaction_votes: {
+                up: reactionVotes.filter(p => p.score > 0).length,
+                down: reactionVotes.filter(p => p.score < 0).length
+              },
+              avg_rating: ratings.length > 0 ? ratings.reduce((sum, p) => sum + p.score, 0) / ratings.length : null,
+              metadata: {
+                genre: metadata.genre,
+                language: metadata.language,
+                pov: metadata.pov,
+                tone: metadata.tone,
+                styleReference: metadata.styleReference
+              }
+            });
+          }
+        }
+        return rewardData;
+
+      default:
+        throw new Error(`Unknown training format: ${format}`);
+    }
+  }
+}
+
+// ============================================================
+// STORY BIBLE PARSER
+// ============================================================
+
+/**
+ * Parse Story Bible data from outline text (Gandalf's output)
+ * Extracts CHARACTERS, PLOT THREADS, WORLD FACTS, and CHEKHOVS sections
+ *
+ * @param {string} outlineText - Raw outline text from Gandalf
+ * @returns {Object} Parsed story bible data matching EMPTY_STORY_BIBLE structure
+ */
+function parseStoryBibleFromOutline(outlineText) {
+  if (!outlineText || typeof outlineText !== 'string') {
+    console.log('[Parser] No outline text provided');
+    return { ...EMPTY_STORY_BIBLE };
+  }
+
+  console.log(`[Parser] Parsing story bible from outline (${outlineText.length} chars)`);
+
+  const bible = {
+    characters: {},
+    relationships: [],
+    plotThreads: [],
+    worldFacts: [],
+    timeline: [],
+    chekhovs: []
+  };
+
+  // Find STORY BIBLE section
+  // Match everything from "## STORY BIBLE" until end of string or next "## " (not "###")
+  // Since STORY BIBLE is typically the last major section, we use greedy matching
+  const storyBibleMatch = outlineText.match(/##\s*STORY BIBLE\s*\n([\s\S]*)$/i);
+  if (!storyBibleMatch) {
+    console.log('[Parser] No STORY BIBLE section found');
+    return bible;
+  }
+
+  const bibleSection = storyBibleMatch[1];
+  console.log(`[Parser] Found STORY BIBLE section (${bibleSection.length} chars)`);
+
+  // Parse CHARACTERS section
+  const charactersMatch = bibleSection.match(/###\s*CHARACTERS\s*\n([\s\S]*?)(?=###|$)/i);
+  if (charactersMatch) {
+    const charactersText = charactersMatch[1];
+    console.log(`[Parser] Found CHARACTERS section (${charactersText.length} chars)`);
+
+    // Split by character entries (each starts with "- ID:" or "ID:")
+    const charBlocks = charactersText.split(/(?=(?:^|\n)-?\s*ID:\s*char-)/i);
+
+    for (const block of charBlocks) {
+      if (!block.trim()) continue;
+
+      const idMatch = block.match(/ID:\s*(char-\d+)/i);
+      const nameMatch = block.match(/Name:\s*(.+?)(?:\n|$)/i);
+      const aliasesMatch = block.match(/Aliases:\s*(.+?)(?:\n|$)/i);
+      const descMatch = block.match(/Description:\s*(.+?)(?:\n|$)/i);
+      const traitsMatch = block.match(/Traits:\s*(.+?)(?:\n|$)/i);
+      const roleMatch = block.match(/Role:\s*(.+?)(?:\n|$)/i);
+      const arcMatch = block.match(/Arc:\s*(.+?)(?:\n|$)/i);
+      const statusMatch = block.match(/Status:\s*(.+?)(?:\n|$)/i);
+
+      if (idMatch && nameMatch) {
+        const charId = idMatch[1];
+        bible.characters[charId] = {
+          id: charId,
+          name: nameMatch[1].trim(),
+          aliases: aliasesMatch ? aliasesMatch[1].trim().split(/[,，、]/).map(a => a.trim()).filter(a => a) : [],
+          description: descMatch ? descMatch[1].trim() : '',
+          traits: traitsMatch ? traitsMatch[1].trim().split(/[,，、]/).map(t => t.trim()).filter(t => t) : [],
+          role: roleMatch ? roleMatch[1].trim() : '',
+          arc: arcMatch ? arcMatch[1].trim() : '',
+          status: statusMatch ? statusMatch[1].trim() : 'alive',
+          updatedAt: new Date().toISOString()
+        };
+        console.log(`[Parser] Parsed character: ${charId} - ${nameMatch[1].trim()}`);
+      }
+    }
+  }
+
+  // Parse PLOT THREADS section
+  const plotThreadsMatch = bibleSection.match(/###\s*PLOT THREADS\s*\n([\s\S]*?)(?=###|$)/i);
+  if (plotThreadsMatch) {
+    const threadsText = plotThreadsMatch[1];
+    console.log(`[Parser] Found PLOT THREADS section (${threadsText.length} chars)`);
+
+    // Split by thread entries
+    const threadBlocks = threadsText.split(/(?=(?:^|\n)-?\s*ID:\s*thread-)/i);
+
+    for (const block of threadBlocks) {
+      if (!block.trim()) continue;
+
+      const idMatch = block.match(/ID:\s*(thread-\d+)/i);
+      const titleMatch = block.match(/Title:\s*(.+?)(?:\n|$)/i);
+      const descMatch = block.match(/Description:\s*(.+?)(?:\n|$)/i);
+      const resolutionMatch = block.match(/Resolution:\s*(.+?)(?:\n|$)/i);
+
+      if (idMatch && titleMatch) {
+        bible.plotThreads.push({
+          id: idMatch[1],
+          title: titleMatch[1].trim(),
+          description: descMatch ? descMatch[1].trim() : '',
+          resolution: resolutionMatch ? resolutionMatch[1].trim() : '',
+          foreshadowing: [],
+          resolved: null,
+          addedAt: new Date().toISOString()
+        });
+        console.log(`[Parser] Parsed plot thread: ${idMatch[1]} - ${titleMatch[1].trim()}`);
+      }
+    }
+  }
+
+  // Parse WORLD FACTS section
+  const worldFactsMatch = bibleSection.match(/###\s*WORLD FACTS\s*\n([\s\S]*?)(?=###|$)/i);
+  if (worldFactsMatch) {
+    const factsText = worldFactsMatch[1];
+    console.log(`[Parser] Found WORLD FACTS section (${factsText.length} chars)`);
+
+    // Parse facts in format: "- [Category]: [Fact]" or "- Category: Fact"
+    const factLines = factsText.split('\n');
+    for (const line of factLines) {
+      // Match "- [Category]: Fact" or "- Category: Fact"
+      const factMatch = line.match(/^-\s*\[?([^\]:]+)\]?:\s*(.+)$/);
+      if (factMatch) {
+        bible.worldFacts.push({
+          category: factMatch[1].trim(),
+          fact: factMatch[2].trim(),
+          addedAt: new Date().toISOString()
+        });
+        console.log(`[Parser] Parsed world fact: [${factMatch[1].trim()}]`);
+      }
+    }
+  }
+
+  // Parse CHEKHOVS section
+  const chekhovsMatch = bibleSection.match(/###\s*CHEKHOVS\s*\n([\s\S]*?)(?=###|$)/i);
+  if (chekhovsMatch) {
+    const chekhovsText = chekhovsMatch[1];
+    console.log(`[Parser] Found CHEKHOVS section (${chekhovsText.length} chars)`);
+
+    // Split by chekhov entries
+    const chekhovBlocks = chekhovsText.split(/(?=(?:^|\n)-?\s*Item:)/i);
+
+    for (const block of chekhovBlocks) {
+      if (!block.trim()) continue;
+
+      const itemMatch = block.match(/Item:\s*(.+?)(?:\n|$)/i);
+      const setupMatch = block.match(/Setup:\s*(.+?)(?:\n|$)/i);
+      const payoffMatch = block.match(/Payoff:\s*(.+?)(?:\n|$)/i);
+
+      if (itemMatch) {
+        bible.chekhovs.push({
+          item: itemMatch[1].trim(),
+          introduced: setupMatch ? setupMatch[1].trim() : '',
+          notes: payoffMatch ? payoffMatch[1].trim() : '',
+          payoff: null,
+          addedAt: new Date().toISOString()
+        });
+        console.log(`[Parser] Parsed Chekhov's gun: ${itemMatch[1].trim()}`);
+      }
+    }
+  }
+
+  // Summary
+  console.log(`[Parser] Parsing complete:`);
+  console.log(`  - Characters: ${Object.keys(bible.characters).length}`);
+  console.log(`  - Plot threads: ${bible.plotThreads.length}`);
+  console.log(`  - World facts: ${bible.worldFacts.length}`);
+  console.log(`  - Chekhovs: ${bible.chekhovs.length}`);
+
+  return bible;
 }
 
 module.exports = {
@@ -1147,5 +1757,6 @@ module.exports = {
   NOVEL_STATUS,
   REVISION_MODE,
   DEFAULT_CONFIG,
-  EMPTY_STORY_BIBLE
+  EMPTY_STORY_BIBLE,
+  parseStoryBibleFromOutline
 };
