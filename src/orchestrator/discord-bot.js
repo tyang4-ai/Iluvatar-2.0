@@ -2036,10 +2036,10 @@ class IluvatarBot {
       return;
     }
 
-    const title = `📖 ${metadata.title} - Chapter ${chapterNum}: ${chapter.title || ''}`;
-    const content = chapter.content || chapter.raw || 'No content available';
+    const { title: chapterTitle, content: chapterContent } = this.extractChapterData(chapter, chapterNum);
+    const title = `📖 ${metadata.title} - Chapter ${chapterNum}: ${chapterTitle}`;
 
-    await this.sendContentAsEmbeds(interaction, title, content, {
+    await this.sendContentAsEmbeds(interaction, title, chapterContent || 'No content available', {
       footer: `Chapter ${chapterNum}/${stats.chaptersWritten} | Novel ID: ${novelId}`
     });
   }
@@ -2159,9 +2159,8 @@ class IluvatarBot {
     for (let i = fromChapter; i <= toChapter; i++) {
       const chapter = state.chapters ? state.chapters[i] : null;
       if (chapter) {
-        const chapterTitle = chapter.title || `Chapter ${i}`;
-        const content = chapter.content || chapter.raw || '';
-        chaptersContent.push(`# Chapter ${i}: ${chapterTitle}\n\n${content}`);
+        const { title, content } = this.extractChapterData(chapter, i);
+        chaptersContent.push(`# Chapter ${i}: ${title}\n\n${content}`);
       }
     }
 
@@ -2212,9 +2211,8 @@ class IluvatarBot {
     for (let i = 1; i <= stats.chaptersWritten; i++) {
       const chapter = state.chapters ? state.chapters[i] : null;
       if (chapter) {
-        const chapterTitle = chapter.title || `Chapter ${i}`;
-        const content = chapter.content || chapter.raw || '';
-        chaptersContent.push(`# Chapter ${i}: ${chapterTitle}\n\n${content}`);
+        const { title, content } = this.extractChapterData(chapter, i);
+        chaptersContent.push(`# Chapter ${i}: ${title}\n\n${content}`);
       }
     }
 
@@ -2802,8 +2800,7 @@ class IluvatarBot {
     } else {
       for (const num of chapterNumbers) {
         const chapter = chapterList[num];
-        const chapterContent = typeof chapter === 'string' ? chapter : (chapter.content || chapter.text || '');
-        const chapterTitle = (typeof chapter === 'object' && chapter.title) ? chapter.title : `Chapter ${num}`;
+        const { title: chapterTitle, content: chapterContent } = this.extractChapterData(chapter, num);
 
         if (format === 'markdown') {
           content += `## Chapter ${num}: ${chapterTitle}\n\n`;
@@ -3003,6 +3000,50 @@ class IluvatarBot {
 
     // Safety: ensure we have at least one non-empty chunk
     return chunks.length > 0 ? chunks : ['No content available'];
+  }
+
+  /**
+   * Extract chapter text and title from various storage formats
+   * Handles Claude API format {data: [{type: "text", text: "..."}]} and plain strings
+   * @param {*} chapter - Chapter data (string, object with content, or Claude API format)
+   * @param {number} chapterNum - Chapter number (for fallback title)
+   * @returns {{title: string, content: string}}
+   */
+  extractChapterData(chapter, chapterNum) {
+    let text = '';
+
+    // Extract text from various formats
+    if (typeof chapter === 'string') {
+      text = chapter;
+    } else if (chapter?.data && Array.isArray(chapter.data)) {
+      // Claude API format: {data: [{type: "text", text: "..."}, ...]}
+      const textBlock = chapter.data.find(item => item.type === 'text');
+      text = textBlock?.text || '';
+    } else if (chapter?.content) {
+      text = chapter.content;
+    } else if (chapter?.text) {
+      text = chapter.text;
+    } else if (chapter?.raw) {
+      text = chapter.raw;
+    }
+
+    // Extract title from markdown (# Title or ## CHAPTER TITLE section)
+    let title = `Chapter ${chapterNum}`;
+
+    // Try to match "# Title" at the start (Chinese or English)
+    const h1Match = text.match(/^#\s+(.+?)(?:\n|$)/m);
+    if (h1Match) {
+      title = h1Match[1].trim();
+    } else {
+      // Try to match "## CHAPTER TITLE" section (Frodo's output format)
+      const titleSectionMatch = text.match(/##\s*CHAPTER\s*TITLE\s*\n+(.+?)(?:\n\n|$)/i);
+      if (titleSectionMatch) {
+        title = titleSectionMatch[1].trim();
+      }
+    }
+
+    // For content, use the full text (title is part of the chapter)
+    return { title, content: text };
   }
 
   /**
