@@ -2236,36 +2236,54 @@ class IluvatarBot {
     console.log(`[Discord] sendContentAsEmbeds: content length=${content?.length || 0}`);
     console.log(`[Discord] sendContentAsEmbeds: footer="${safeFooter}" (${safeFooter?.length || 0} chars)`);
 
-    const chunks = this.splitContent(content, 4000);
+    // Use smaller chunks (3000) to be safe with multi-byte characters like Chinese
+    const chunks = this.splitContent(content, 3000);
     console.log(`[Discord] sendContentAsEmbeds: split into ${chunks.length} chunks`);
     chunks.forEach((chunk, i) => {
       console.log(`[Discord] sendContentAsEmbeds: chunk[${i}] length=${chunk.length}`);
     });
 
-    const embeds = chunks.map((chunk, i) => {
+    // Send first embed as reply
+    console.log(`[Discord] sendContentAsEmbeds: sending first embed...`);
+    const firstEmbed = new EmbedBuilder()
+      .setColor(0x9932cc)
+      .setTitle(safeTitle)
+      .setDescription(chunks[0]);
+
+    if (chunks.length === 1 && safeFooter) {
+      firstEmbed.setFooter({ text: safeFooter });
+    }
+
+    try {
+      await interaction.editReply({ embeds: [firstEmbed] });
+      console.log(`[Discord] sendContentAsEmbeds: first embed sent successfully`);
+    } catch (err) {
+      console.error(`[Discord] sendContentAsEmbeds: first embed failed:`, err.message);
+      // Try plain text fallback
+      await interaction.editReply({ content: chunks[0].substring(0, 2000) });
+      return;
+    }
+
+    // Send remaining chunks as follow-ups with small delay
+    for (let i = 1; i < chunks.length; i++) {
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 300));
+
       const embed = new EmbedBuilder()
         .setColor(0x9932cc)
-        .setDescription(chunk);
+        .setDescription(chunks[i]);
 
-      if (i === 0) {
-        embed.setTitle(safeTitle);
-      }
       if (i === chunks.length - 1 && safeFooter) {
         embed.setFooter({ text: safeFooter });
       }
 
-      return embed;
-    });
-
-    // Send first embed as reply, rest as follow-ups
-    console.log(`[Discord] sendContentAsEmbeds: sending first embed...`);
-    await interaction.editReply({ embeds: [embeds[0]] });
-    console.log(`[Discord] sendContentAsEmbeds: first embed sent successfully`);
-
-    for (let i = 1; i < embeds.length; i++) {
       console.log(`[Discord] sendContentAsEmbeds: sending followUp embed ${i}...`);
-      await interaction.followUp({ embeds: [embeds[i]] });
-      console.log(`[Discord] sendContentAsEmbeds: followUp embed ${i} sent successfully`);
+      try {
+        await interaction.followUp({ embeds: [embed] });
+        console.log(`[Discord] sendContentAsEmbeds: followUp embed ${i} sent successfully`);
+      } catch (err) {
+        console.error(`[Discord] sendContentAsEmbeds: followUp ${i} failed:`, err.message);
+      }
     }
   }
 
