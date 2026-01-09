@@ -237,7 +237,21 @@ class StateManager {
         let parsed = JSON.parse(hashValue);
         // Only return if it's a real value (not null/undefined/empty object)
         // For chapters/critiques, empty object {} should fall back to N8N keys
-        const isEmpty = typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length === 0;
+        let isEmpty = typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length === 0;
+
+        // Special check for storyBible: it has keys but they might all be empty
+        // Check if storyBible is effectively empty (no characters, no plotThreads, etc.)
+        if (key === 'storyBible' && !isEmpty && typeof parsed === 'object') {
+          const hasCharacters = parsed.characters && (Array.isArray(parsed.characters) ? parsed.characters.length > 0 : Object.keys(parsed.characters).length > 0);
+          const hasPlotThreads = parsed.plotThreads && parsed.plotThreads.length > 0;
+          const hasChekhovs = parsed.chekhovs && parsed.chekhovs.length > 0;
+          const hasWorldFacts = parsed.worldFacts && parsed.worldFacts.length > 0;
+          // If all main fields are empty, treat as empty to allow fallback to string key
+          if (!hasCharacters && !hasPlotThreads && !hasChekhovs && !hasWorldFacts) {
+            isEmpty = true;
+          }
+        }
+
         if (parsed !== null && parsed !== undefined && !isEmpty) {
           // Extract Claude text for outline and chapters
           if (key === 'outline' || key.startsWith('chapter')) {
