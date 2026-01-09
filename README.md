@@ -4,13 +4,32 @@
 
 > *Named after Tolkien's creator god* - An automated novel creation pipeline that learns your writing style through ML fine-tuning.
 
-## Overview
+## What It Does
 
-ILUVATAR is both a **working novel writing system** and a **learning project** for ML skills:
+ILUVATAR is a **Discord-controlled novel writing pipeline** with three AI agents:
+
+- **Gandalf** (Planner) - Creates novel outlines, Story Bibles, and chapter plans
+- **Frodo** (Writer) - Writes chapters following the plan, maintaining style consistency
+- **Elrond** (Critic) - Evaluates chapters and provides revision feedback
+
+All orchestrated through Discord slash commands, with N8N handling the workflow automation and Redis storing novel state.
+
+### Current Capabilities
+
+- `/novel create` - Start a new novel with premise and author style
+- `/novel outline` - Generate detailed novel outline with Story Bible
+- `/novel plan_chapter` - Create detailed chapter plan before writing
+- `/novel write` - Generate chapters with optional auto-critique/revision
+- `/novel critique` - Get feedback on any chapter from the critic
+- `/novel revise` - Revise a chapter based on feedback
+- `/novel feedback` - Manual DPO preference pairs for ML training
+- `/novel export` - Export to markdown/JSON for training data
+
+### ML Learning Goals
 
 - **Fine-tuning LLMs** (LoRA/QLoRA on Qwen2.5)
 - **RLHF/DPO** (preference learning from critic feedback)
-- **RAG & Embeddings** (long-context novel management)
+- **RAG & Embeddings** (long-context novel management via Story Bible)
 - **Evaluation** (custom benchmarks for writing quality)
 
 ### The Novel
@@ -20,7 +39,7 @@ A multi-POV xianxia/sci-fi/thriller fusion:
 - Science Fiction - Technology, futuristic elements
 - Thriller - Suspense, plot twists, pacing
 
-Multiple short web novels telling the same story from different character perspectives, eventually unified into one complete narrative.
+Multiple short web novels telling the same story from different character perspectives.
 
 ## Architecture
 
@@ -65,15 +84,25 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+## Current Status
+
+| Phase | Status |
+|-------|--------|
+| Infrastructure (Discord, N8N, Redis) | COMPLETE |
+| Novel Pipeline (outline → write → critique → revise) | COMPLETE |
+| Auto-Critique/Revision Cycle | COMPLETE |
+| DPO Data Collection (`/novel feedback`) | COMPLETE |
+| ML Training Pipeline | IN PROGRESS |
+
 ## ML Learning Path
 
-| Module | Focus | Timeline |
-|--------|-------|----------|
-| 1. Baselines | API writer + evaluation | Weeks 1-2 |
-| 2. Embeddings/RAG | Vector DBs, retrieval | Weeks 3-4 |
-| 3. Fine-tuning | LoRA/QLoRA training | Weeks 5-8 |
-| 4. RLHF/DPO | Preference learning | Weeks 9-12 |
-| 5. Evaluation | Benchmarks, metrics | Ongoing |
+| Module | Focus |
+|--------|-------|
+| 1. Baselines | API writer + evaluation |
+| 2. Embeddings/RAG | Vector DBs, retrieval |
+| 3. Fine-tuning | LoRA/QLoRA training |
+| 4. RLHF/DPO | Preference learning |
+| 5. Evaluation | Benchmarks, metrics |
 
 ## Hardware
 
