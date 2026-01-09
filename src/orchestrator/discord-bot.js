@@ -3103,10 +3103,134 @@ class IluvatarBot {
 
             await this.novelManager.syncChapterMetadata(novelId, parseInt(chapterNum));
 
+            // Check if auto-critique is enabled and trigger it
+            const state = await this.novelManager.getNovelState(novelId);
+            const metadata = state?.metadata;
+
+            // Only trigger auto-critique if:
+            // 1. autoCritique is enabled
+            // 2. This chapter doesn't already have a critique (prevents loop: write->critique->revise->critique...)
+            const existingCritique = await this.novelManager.getCritique(novelId, parseInt(chapterNum));
+
+            if (metadata?.autoCritique && !existingCritique) {
+              console.log(`[Callback] Auto-critique enabled and no existing critique, triggering for chapter ${chapterNum}`);
+
+              // Get bible context for Elrond
+              let bibleContext = null;
+              if (this.novelManager.bibleRetriever) {
+                try {
+                  const relevantBible = await this.novelManager.bibleRetriever.getRelevantBible(novelId, chapterNum);
+                  bibleContext = this.novelManager.bibleRetriever.formatForPrompt(relevantBible);
+                } catch (err) {
+                  console.error('[Callback] Failed to get bible context for auto-critique:', err);
+                }
+              }
+
+              // Trigger critique via N8N
+              const callbackChannelId = metadata.discordChannelId;
+              await this.triggerN8N({
+                action: 'critique',
+                novelId,
+                metadata,
+                chapterNum: parseInt(chapterNum),
+                bibleContext
+              }, callbackChannelId);
+
+              console.log(`[Callback] Auto-critique triggered for ${novelId} chapter ${chapterNum}`);
+            } else if (metadata?.autoCritique && existingCritique) {
+              console.log(`[Callback] Skipping auto-critique for chapter ${chapterNum} - critique already exists (revision cycle)`);
+            }
+
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true, novelId, chapterNum }));
+            res.end(JSON.stringify({
+              success: true,
+              novelId,
+              chapterNum,
+              autoCritiqueTriggered: metadata?.autoCritique && !existingCritique,
+              skippedReason: existingCritique ? 'critique_exists' : null
+            }));
           } catch (err) {
             console.error('[Callback] Error syncing chapter:', err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+      } else if (req.method === 'POST' && req.url === '/sync-critique') {
+        // Called by N8N after saving a critique - triggers auto-revision if enabled
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const data = JSON.parse(body);
+            const { novelId, chapterNum } = data;
+
+            if (!novelId || !chapterNum) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Missing novelId or chapterNum' }));
+              return;
+            }
+
+            const state = await this.novelManager.getNovelState(novelId);
+            const metadata = state?.metadata;
+
+            // Only trigger auto-revision if autoCritique is enabled (same setting controls both)
+            if (metadata?.autoCritique) {
+              console.log(`[Callback] Auto-revision enabled, triggering revision for chapter ${chapterNum}`);
+
+              // Get the critique we just saved
+              const critique = await this.novelManager.getCritique(novelId, parseInt(chapterNum));
+              let critiqueText = '';
+              if (critique) {
+                if (typeof critique === 'string') {
+                  critiqueText = critique;
+                } else if (critique.data && Array.isArray(critique.data)) {
+                  const textBlock = critique.data.find(item => item.type === 'text');
+                  critiqueText = textBlock?.text || JSON.stringify(critique);
+                } else if (critique.text) {
+                  critiqueText = critique.text;
+                } else {
+                  critiqueText = JSON.stringify(critique);
+                }
+              }
+
+              if (!critiqueText) {
+                console.log(`[Callback] No critique found for auto-revision, skipping`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, novelId, chapterNum, autoRevisionTriggered: false, reason: 'no critique' }));
+                return;
+              }
+
+              // Get bible context for revision
+              let bibleContext = null;
+              if (this.novelManager.bibleRetriever) {
+                try {
+                  const relevantBible = await this.novelManager.bibleRetriever.getRelevantBible(novelId, parseInt(chapterNum));
+                  bibleContext = this.novelManager.bibleRetriever.formatForPrompt(relevantBible);
+                } catch (err) {
+                  console.error('[Callback] Failed to get bible context for auto-revision:', err);
+                }
+              }
+
+              // Trigger revision via N8N
+              const callbackChannelId = metadata.discordChannelId;
+              await this.triggerN8N({
+                action: 'revise_chapter',
+                novelId,
+                metadata,
+                chapterNum: parseInt(chapterNum),
+                feedback: `## Elrond's Critique (Auto-Revision)\n${critiqueText}`,
+                bibleContext
+              }, callbackChannelId);
+
+              console.log(`[Callback] Auto-revision triggered for ${novelId} chapter ${chapterNum}`);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, novelId, chapterNum, autoRevisionTriggered: true }));
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, novelId, chapterNum, autoRevisionTriggered: false }));
+            }
+          } catch (err) {
+            console.error('[Callback] Error in sync-critique:', err);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: err.message }));
           }

@@ -512,6 +512,87 @@ The following components are **working correctly** and should NOT be modified un
 
 ---
 
+## Bug Fixes Applied (Jan 9, 2026)
+
+### 1. Story Bible showing 0 characters when data exists
+
+**Problem**: `/novel bible` showed 0 characters even though the Full Content thread displayed character data.
+
+**Root Cause**: The hash field `storyBible` was initialized empty on novel creation, but N8N saves to a string key. StateManager's `get()` method found the empty hash field first and returned it instead of falling back to the string key.
+
+**Fix**: Added special check in `state-manager.js` for "effectively empty" storyBible (has structure but all arrays empty). If empty, falls back to string key lookup.
+- File: `src/core/state-manager.js`
+
+### 2. Parse Bible from Gandalf not parsing characters
+
+**Problem**: Characters in STORY BIBLE section weren't being parsed into storyBible.
+
+**Root Cause**: Gandalf outputs markdown format with `---` dividers between characters and `**Field**:` format, but parser used different regex patterns.
+
+**Fix**: Updated "Parse Bible from Gandalf" N8N node:
+- Split on `---` dividers instead of trying to match ID patterns
+- Match `**ID**:`, `**Name**:` format with `\*\*Field\*\*:` regex
+- Node: "Parse Bible from Gandalf" in N8N
+
+### 3. World Facts not being parsed (Chinese colon)
+
+**Problem**: World Facts section showed 0 entries despite data existing in outline.
+
+**Root Cause**: Gandalf outputs `- **地理**：听雨楼位于太湖之滨` with **Chinese colon** `：` but regex only matched English colon `:`.
+
+**Fix**: Updated regex to match both Chinese and English colons: `/^-?\s*\*\*([^*]+)\*\*[：:]\s*(.+)/`
+- Node: "Parse Bible from Gandalf" in N8N
+
+### 4. Auto-critique not triggering after chapter write
+
+**Problem**: `autoCritique` setting was stored and displayed but never actually triggered Elrond.
+
+**Root Cause**: The `/sync-chapter` callback only synced metadata but didn't check autoCritique setting.
+
+**Fix**: Added auto-critique triggering in `/sync-chapter` callback:
+1. After syncing chapter metadata, check if `autoCritique` is enabled
+2. Check if chapter already has a critique (prevents infinite loops)
+3. If enabled and no existing critique, trigger N8N critique action
+- File: `src/orchestrator/discord-bot.js`
+
+### 5. Auto-revision after critique
+
+**Problem**: Auto-critique would evaluate the chapter but not automatically revise it.
+
+**Fix**: Added `/sync-critique` callback endpoint and N8N node:
+1. Discord bot: Added `/sync-critique` endpoint that triggers auto-revision
+2. N8N: Added "Sync Critique Metadata" node after "Save Critique to Redis"
+3. Flow: Write → Critique → Revision (single cycle, then stops)
+
+**Loop Prevention**: Auto-critique only triggers if no existing critique for the chapter. After revision:
+- Revision saves → `/sync-chapter` callback fires
+- Callback checks for existing critique → **found** → skips auto-critique
+- Loop broken!
+
+**Files Modified**:
+- `src/orchestrator/discord-bot.js` - Added `/sync-critique` endpoint, loop prevention logic
+- N8N: Added "Sync Critique Metadata" node
+
+### Auto-Critique + Auto-Revision Flow
+
+```
+1. Write Chapter (Frodo)
+   ↓
+2. Save Chapter → /sync-chapter callback
+   ↓ (if autoCritique=true AND no existing critique)
+3. Trigger Critique (Elrond)
+   ↓
+4. Save Critique → /sync-critique callback
+   ↓ (if autoCritique=true)
+5. Trigger Revision (Frodo with critique as feedback)
+   ↓
+6. Save Revised Chapter → /sync-chapter callback
+   ↓ (critique exists → STOP, no infinite loop)
+7. Done!
+```
+
+---
+
 ## Resume Instructions
 
 1. Read this SESSION-CONTEXT.md file
