@@ -591,6 +591,30 @@ The following components are **working correctly** and should NOT be modified un
 7. Done!
 ```
 
+### 6. Read/Export commands showing wrong chapter titles
+
+**Problem**: `/novel read_all` and `/novel export` showed "Chapter 1: Chapter 1" instead of actual chapter titles.
+
+**Root Cause**: Chapters are stored in Claude API format `{data: [{type: "text", text: "# 第一章 血书惊江南\n..."}]}` but code expected `chapter.title` and `chapter.content` properties.
+
+**Fix**: Added `extractChapterData()` helper function that:
+1. Handles Claude API format, plain strings, and legacy formats
+2. Extracts title from markdown headers (`# Title` or `## CHAPTER TITLE`)
+3. Updated `handleReadChapter`, `handleReadSection`, `handleReadAll`, `handleExport`
+- File: `src/orchestrator/discord-bot.js`
+
+### 7. Discord API 500 error on read_all with long content
+
+**Problem**: `/novel read_all` returned "Internal Server Error" when displaying chapters.
+
+**Root Cause**: Discord API 500 error when sending embeds - likely rate limiting or multi-byte character issues with Chinese text.
+
+**Fix**:
+1. Reduced embed chunk size from 4000 to 3000 chars (safer for Chinese)
+2. Added 300ms delay between followUp messages
+3. Added try/catch with plain text fallback if embed fails
+- File: `src/orchestrator/discord-bot.js`
+
 ---
 
 ## Resume Instructions
