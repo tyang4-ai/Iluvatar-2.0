@@ -3069,20 +3069,38 @@ class IluvatarBot {
     if (contentMatch) {
       displayContent = contentMatch[1].trim();
     } else {
-      // Fallback: strip everything from ## BIBLE UPDATES onward
-      const bibleUpdateIndex = text.search(/\n##\s*BIBLE UPDATES/i);
-      if (bibleUpdateIndex > 0) {
-        displayContent = text.substring(0, bibleUpdateIndex).trim();
+      // Fallback: strip metadata sections in various formats
+
+      // Format 1: "---" separator followed by "BIBLE UPDATES" (actual Frodo output)
+      const separatorBibleIndex = text.search(/\n---\s*\n+BIBLE UPDATES/i);
+      if (separatorBibleIndex > 0) {
+        displayContent = text.substring(0, separatorBibleIndex).trim();
+      } else {
+        // Format 2: Just "BIBLE UPDATES" on its own line (no ## prefix)
+        const plainBibleIndex = text.search(/\n\nBIBLE UPDATES\n/i);
+        if (plainBibleIndex > 0) {
+          displayContent = text.substring(0, plainBibleIndex).trim();
+        } else {
+          // Format 3: "## BIBLE UPDATES" with markdown header
+          const mdBibleIndex = text.search(/\n##\s*BIBLE UPDATES/i);
+          if (mdBibleIndex > 0) {
+            displayContent = text.substring(0, mdBibleIndex).trim();
+          }
+        }
       }
 
-      // Also strip ## AUTHOR NOTES if present
-      const authorNotesIndex = displayContent.search(/\n##\s*AUTHOR NOTES/i);
+      // Also strip AUTHOR NOTES in various formats
+      let authorNotesIndex = displayContent.search(/\n---\s*\n+AUTHOR NOTES/i);
+      if (authorNotesIndex < 0) authorNotesIndex = displayContent.search(/\n\nAUTHOR NOTES\n/i);
+      if (authorNotesIndex < 0) authorNotesIndex = displayContent.search(/\n##\s*AUTHOR NOTES/i);
       if (authorNotesIndex > 0) {
         displayContent = displayContent.substring(0, authorNotesIndex).trim();
       }
 
-      // Also strip ## WORD COUNT if present
-      const wordCountIndex = displayContent.search(/\n##\s*WORD COUNT/i);
+      // Also strip WORD COUNT in various formats
+      let wordCountIndex = displayContent.search(/\n---\s*\n+WORD COUNT/i);
+      if (wordCountIndex < 0) wordCountIndex = displayContent.search(/\n\nWORD COUNT\n/i);
+      if (wordCountIndex < 0) wordCountIndex = displayContent.search(/\n##\s*WORD COUNT/i);
       if (wordCountIndex > 0) {
         displayContent = displayContent.substring(0, wordCountIndex).trim();
       }
