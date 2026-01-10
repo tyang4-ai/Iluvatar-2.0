@@ -3060,8 +3060,75 @@ class IluvatarBot {
       }
     }
 
-    // For content, use the full text (title is part of the chapter)
-    return { title, content: text };
+    // Extract only the story content for display
+    // Strip BIBLE UPDATES, AUTHOR NOTES, WORD COUNT sections (Frodo's metadata)
+    let displayContent = text;
+
+    // Try to extract just the ## CONTENT section (Frodo's format)
+    const contentMatch = text.match(/##\s*CONTENT\s*\n([\s\S]*?)(?=\n##\s*(?:WORD COUNT|AUTHOR NOTES|BIBLE UPDATES)|$)/i);
+    if (contentMatch) {
+      displayContent = contentMatch[1].trim();
+    } else {
+      // Fallback: strip everything from ## BIBLE UPDATES onward
+      const bibleUpdateIndex = text.search(/\n##\s*BIBLE UPDATES/i);
+      if (bibleUpdateIndex > 0) {
+        displayContent = text.substring(0, bibleUpdateIndex).trim();
+      }
+
+      // Also strip ## AUTHOR NOTES if present
+      const authorNotesIndex = displayContent.search(/\n##\s*AUTHOR NOTES/i);
+      if (authorNotesIndex > 0) {
+        displayContent = displayContent.substring(0, authorNotesIndex).trim();
+      }
+
+      // Also strip ## WORD COUNT if present
+      const wordCountIndex = displayContent.search(/\n##\s*WORD COUNT/i);
+      if (wordCountIndex > 0) {
+        displayContent = displayContent.substring(0, wordCountIndex).trim();
+      }
+    }
+
+    return { title, content: displayContent };
+  }
+
+  /**
+   * Parse multi-chapter plan output from Gandalf into individual chapter plans
+   * Looks for chapter markers like "## Chapter 2", "### 第二章", "## CHAPTER 2:"
+   * @param {string} planContent - Full plan content from Gandalf
+   * @param {number} startChapter - Starting chapter number
+   * @param {number} count - Number of chapters planned
+   * @returns {Object} Map of chapter number to plan content
+   */
+  parseMultiChapterPlan(planContent, startChapter, count) {
+    const plans = {};
+
+    // Try to split by chapter markers
+    // Match patterns: "## Chapter 2", "### Chapter 2:", "## 第二章", "## CHAPTER 2 PLAN"
+    const chapterPattern = /\n(?=##\s*(?:Chapter|CHAPTER|第.{1,3}章)\s*\d*[：:.]?\s*(?:PLAN)?)/gi;
+    const sections = planContent.split(chapterPattern);
+
+    if (sections.length >= count) {
+      // Successfully split - assign each section to a chapter
+      for (let i = 0; i < count; i++) {
+        const chapterNum = startChapter + i;
+        plans[chapterNum] = sections[i]?.trim() || `Plan for chapter ${chapterNum}`;
+      }
+    } else {
+      // Couldn't split cleanly - save entire content to each chapter with a note
+      // This ensures /novel write doesn't block on missing plans
+      for (let i = 0; i < count; i++) {
+        const chapterNum = startChapter + i;
+        if (i === 0) {
+          plans[chapterNum] = planContent;
+        } else {
+          // Reference the main plan for subsequent chapters
+          plans[chapterNum] = `See chapter ${startChapter} plan for details.\n\n${planContent}`;
+        }
+      }
+      console.log(`[Callback] Warning: Could not split plan into ${count} chapters, saved full content to each`);
+    }
+
+    return plans;
   }
 
   /**
@@ -3162,6 +3229,26 @@ class IluvatarBot {
 
             await this.novelManager.syncChapterMetadata(novelId, parseInt(chapterNum));
 
+            // Complete any pending DPO revision pairs for this chapter
+            try {
+              const revisionPairs = await this.novelManager.getRevisionPairs(novelId);
+              const incompleteRevision = revisionPairs
+                .filter(p => p.target === 'chapter' && p.chapterNum === parseInt(chapterNum) && !p.revised)
+                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+
+              if (incompleteRevision) {
+                const revisedChapter = await this.novelManager.getChapter(novelId, parseInt(chapterNum));
+                if (revisedChapter) {
+                  const revisedContent = this.extractChapterData(revisedChapter, parseInt(chapterNum)).content;
+                  await this.novelManager.completeRevisionPair(novelId, incompleteRevision.id, revisedContent);
+                  console.log(`[Callback] Completed DPO pair ${incompleteRevision.id} for chapter ${chapterNum}`);
+                }
+              }
+            } catch (dpoErr) {
+              console.error('[Callback] Failed to complete DPO pair:', dpoErr);
+              // Continue even if DPO completion fails
+            }
+
             // Check if auto-critique is enabled and trigger it
             const state = await this.novelManager.getNovelState(novelId);
             const metadata = state?.metadata;
@@ -3259,6 +3346,25 @@ class IluvatarBot {
                 return;
               }
 
+              // Store DPO pair: original chapter + critique as feedback (BEFORE revision)
+              try {
+                const originalChapter = await this.novelManager.getChapter(novelId, parseInt(chapterNum));
+                if (originalChapter) {
+                  const originalContent = this.extractChapterData(originalChapter, parseInt(chapterNum)).content;
+                  await this.novelManager.storeRevisionPair(novelId, {
+                    target: 'chapter',
+                    chapterNum: parseInt(chapterNum),
+                    original: originalContent,
+                    feedback: critiqueText,
+                    metadata: metadata
+                  });
+                  console.log(`[Callback] Stored DPO pair for chapter ${chapterNum} (original + critique)`);
+                }
+              } catch (dpoErr) {
+                console.error('[Callback] Failed to store DPO pair:', dpoErr);
+                // Continue with revision even if DPO storage fails
+              }
+
               // Get bible context for revision
               let bibleContext = null;
               if (this.novelManager.bibleRetriever) {
@@ -3290,6 +3396,41 @@ class IluvatarBot {
             }
           } catch (err) {
             console.error('[Callback] Error in sync-critique:', err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+      } else if (req.method === 'POST' && req.url === '/sync-chapter-plan') {
+        // Parse multi-chapter plans and save individually
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const data = JSON.parse(body);
+            const { novelId, chapterNum, chapterCount, planContent } = data;
+
+            if (!novelId || !chapterNum || !planContent) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Missing novelId, chapterNum, or planContent' }));
+              return;
+            }
+
+            const count = parseInt(chapterCount) || 1;
+            const startChapter = parseInt(chapterNum);
+            console.log(`[Callback] Received chapter plan for ${novelId}, chapters ${startChapter}-${startChapter + count - 1}`);
+
+            // Split by chapter markers and save each chapter plan
+            const chapterPlans = this.parseMultiChapterPlan(planContent, startChapter, count);
+
+            for (const [num, plan] of Object.entries(chapterPlans)) {
+              await this.stateManager.set(`novel:${novelId}`, `chapterPlan_${num}`, plan);
+              console.log(`[Callback] Saved chapter plan ${num}`);
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, chaptersPlanned: Object.keys(chapterPlans) }));
+          } catch (err) {
+            console.error('[Callback] Error in sync-chapter-plan:', err);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: err.message }));
           }
