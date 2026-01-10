@@ -3423,7 +3423,7 @@ class IluvatarBot {
             const chapterPlans = this.parseMultiChapterPlan(planContent, startChapter, count);
 
             for (const [num, plan] of Object.entries(chapterPlans)) {
-              await this.stateManager.set(`novel:${novelId}`, `chapterPlan_${num}`, plan);
+              await this.novelManager.state.set(`novel:${novelId}`, `chapterPlan_${num}`, plan);
               console.log(`[Callback] Saved chapter plan ${num}`);
             }
 
