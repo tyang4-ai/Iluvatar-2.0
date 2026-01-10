@@ -3069,40 +3069,25 @@ class IluvatarBot {
     if (contentMatch) {
       displayContent = contentMatch[1].trim();
     } else {
-      // Fallback: strip metadata sections in various formats
+      // Fallback: strip metadata sections - catch "BIBLE UPDATES" anywhere it appears
+      // This handles various formats: "---\n\nBIBLE UPDATES", "\n\nBIBLE UPDATES", "## BIBLE UPDATES"
 
-      // Format 1: "---" separator followed by "BIBLE UPDATES" (actual Frodo output)
-      const separatorBibleIndex = text.search(/\n---\s*\n+BIBLE UPDATES/i);
-      if (separatorBibleIndex > 0) {
-        displayContent = text.substring(0, separatorBibleIndex).trim();
-      } else {
-        // Format 2: Just "BIBLE UPDATES" on its own line (no ## prefix)
-        const plainBibleIndex = text.search(/\n\nBIBLE UPDATES\n/i);
-        if (plainBibleIndex > 0) {
-          displayContent = text.substring(0, plainBibleIndex).trim();
-        } else {
-          // Format 3: "## BIBLE UPDATES" with markdown header
-          const mdBibleIndex = text.search(/\n##\s*BIBLE UPDATES/i);
-          if (mdBibleIndex > 0) {
-            displayContent = text.substring(0, mdBibleIndex).trim();
-          }
-        }
+      // Most aggressive: find "BIBLE UPDATES" on its own line (possibly after --- or ##)
+      const bibleIndex = text.search(/\n(?:---\s*\n+|##\s*)?BIBLE UPDATES\s*\n/i);
+      if (bibleIndex > 0) {
+        displayContent = text.substring(0, bibleIndex).trim();
       }
 
-      // Also strip AUTHOR NOTES in various formats
-      let authorNotesIndex = displayContent.search(/\n---\s*\n+AUTHOR NOTES/i);
-      if (authorNotesIndex < 0) authorNotesIndex = displayContent.search(/\n\nAUTHOR NOTES\n/i);
-      if (authorNotesIndex < 0) authorNotesIndex = displayContent.search(/\n##\s*AUTHOR NOTES/i);
-      if (authorNotesIndex > 0) {
-        displayContent = displayContent.substring(0, authorNotesIndex).trim();
+      // Also strip AUTHOR NOTES
+      const authorIndex = displayContent.search(/\n(?:---\s*\n+|##\s*)?AUTHOR NOTES\s*\n/i);
+      if (authorIndex > 0) {
+        displayContent = displayContent.substring(0, authorIndex).trim();
       }
 
-      // Also strip WORD COUNT in various formats
-      let wordCountIndex = displayContent.search(/\n---\s*\n+WORD COUNT/i);
-      if (wordCountIndex < 0) wordCountIndex = displayContent.search(/\n\nWORD COUNT\n/i);
-      if (wordCountIndex < 0) wordCountIndex = displayContent.search(/\n##\s*WORD COUNT/i);
-      if (wordCountIndex > 0) {
-        displayContent = displayContent.substring(0, wordCountIndex).trim();
+      // Also strip WORD COUNT
+      const wordIndex = displayContent.search(/\n(?:---\s*\n+|##\s*)?WORD COUNT\s*\n/i);
+      if (wordIndex > 0) {
+        displayContent = displayContent.substring(0, wordIndex).trim();
       }
     }
 
