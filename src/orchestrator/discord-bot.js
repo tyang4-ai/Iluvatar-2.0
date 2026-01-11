@@ -1603,6 +1603,16 @@ class IluvatarBot {
       }
     }
 
+    // Calculate story progress for planning context
+    // This helps Gandalf understand where this chapter falls in the story arc
+    const storyProgress = {
+      chaptersWritten: stats?.chaptersWritten || 0,
+      targetChapters: metadata.targetChapters,
+      percentComplete: Math.round(((stats?.chaptersWritten || 0) / metadata.targetChapters) * 100),
+      planningChapter: chapterNum,
+      planningPercent: Math.round((chapterNum / metadata.targetChapters) * 100)
+    };
+
     // Trigger N8N with plan_chapter action
     await this.triggerN8N({
       action: 'plan_chapter',
@@ -1611,7 +1621,8 @@ class IluvatarBot {
       chapterNum,
       chapterCount: count,
       bibleContext,
-      previousPlansContext
+      previousPlansContext,
+      storyProgress
     }, callbackChannelId);
 
     const chapterRange = count > 1 ? `chapters ${chapterNum}-${endChapter}` : `chapter ${chapterNum}`;
